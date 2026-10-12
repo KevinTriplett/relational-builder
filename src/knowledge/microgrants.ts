@@ -25,7 +25,12 @@ export const MICROGRANT_ASK = new RegExp(
     '\\$\\s?\\d{2,3}\\s?(-|–|to)?\\s?(\\$\\s?\\d{2,3})? (to|for) (host|gather|throw|a (block party|dinner|gathering))',
     'pay(ing)? (neighbors?|neighbours?|hosts?|people|folks|residents) to (host|gather|throw|put on)',
     'stipends? (for|to) (hosts?|neighbors?|gather)',
-    'pizza club|donuts in the driveway|with neighbors',
+    'pizza club|donuts in the driveway',
+    // The With Neighbors organization — only when it reads as a name, not the
+    // phrase. Bare "with neighbors" matched "create dialogue with neighbors"
+    // in an ordinary ask and stamped a mood-board project as a gathering fund
+    // (scripted plan, blueprint in every turn, a cheer email to the stewards).
+    "(?:from|like|by|via|at) with neighbors\\b|with neighbors(?:'s?|’s?)? (?:fund|programs?|cohort|crew|model|playbook|micro-?grants?|grants?)",
     'reimburse\\w* (hosts?|neighbors?) for',
   ].join('|'),
   'i',

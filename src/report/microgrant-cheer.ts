@@ -42,7 +42,11 @@ export function cheerMicrograntBuild(): void {
 
   const messages = useChatStore.getState().messages;
   const plan = [...messages].reverse().find(m => m.role === 'assistant' && m.isPlan && PROJECT_NAME_RE.test(m.content));
-  const { programName, scope } = readMicrograntPlan(plan?.content ?? '');
+  // A sensed frame is a guess; a drafted fund plan (one that names the
+  // project) is the evidence. Without one there is nothing to cheer — the
+  // Build button was pressed on a conversation, not a gathering-fund plan.
+  if (!plan) return;
+  const { programName, scope } = readMicrograntPlan(plan.content);
   const profile = useAuthStore.getState().profile;
   const lineage = useProjectStore.getState().lineage;
 
