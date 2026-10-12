@@ -26,6 +26,15 @@ SUPABASE_ACCESS_TOKEN=... node scripts/seed-commons-shelf.mjs scripts/seed/proso
 ```
 
 Then run the `embed-commons` job for the new rows so retrieval surfaces them.
-Until it's seeded, the gallery chip shows "Nothing here yet".
+
+Seeded and embedded 2026-10-12 (58 rows, `embed-commons` with `item_ids`,
+all 58 processed).
+
+## Known cleanup
+
+About 60 of the 102 `metadata.citations` entries carry a stray icon glyph
+(U+F08E) as `id` where the scraper caught PDN's external-link icon instead
+of a DOI. Nothing renders that field yet; fix in the seed file and re-run
+the seeder with `--apply` (upsert is safe), then re-embed those ids.
 
 Imported 2026-10-11 from the library pages as published that day.
