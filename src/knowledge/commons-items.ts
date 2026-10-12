@@ -130,6 +130,20 @@ export async function fetchDeliberationCards(): Promise<CommonsCard[]> {
 }
 
 /**
+ * Prosocial Design: the Prosocial Design Network's Digital Intervention
+ * Library (CC BY-SA 4.0) — evidence-rated design patterns for healthier
+ * online spaces, each with PDN's rating and citations. The library reference
+ * leads (it explains the ratings), then the patterns alphabetically.
+ */
+export async function fetchProsocialDesignCards(): Promise<CommonsCard[]> {
+  const rows = await rest<CommonsCard[]>(
+    `commons_items?select=${CARD_COLUMNS}` +
+      `&source_studio_slug=eq.prosocial-design&status=eq.canonical&order=sort_order.asc,title.asc`,
+  );
+  return rows.sort((a, b) => (a.kind === 'reference' ? 0 : 1) - (b.kind === 'reference' ? 0 : 1));
+}
+
+/**
  * Microgrants: the neighborhood microgrant program shelf — the end-to-end
  * program system (described feature-by-feature, remixable without code) and
  * the With Neighbors organizer toolkit. The tool leads, the practice guide
