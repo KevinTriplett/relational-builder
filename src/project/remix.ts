@@ -52,14 +52,26 @@ export interface RemixResult {
  * distills intent rather than copying implementation, but the model (and a
  * curious builder) should still know the original's code exists and can be
  * consulted for how it solved the hard parts — with departures welcome.
+ *
+ * The model reads the repo through web fetch, and github.com only serves a
+ * README and single-file views to a fetch — a directory page (`/tree/...`)
+ * comes back empty, which left one build unable to reach the original's
+ * `supabase/` folder it had planned to lean on. So the note also hands over
+ * the two addresses that do work: the API tree (one JSON listing of every
+ * path) and the raw-file pattern.
  * Returns '' when the URL isn't a codebase we can point at.
  */
 export function referenceCodebaseNote(url: string | null | undefined): string {
-  if (!url || !/github\.com\/[\w.-]+\/[\w.-]+/.test(url)) return '';
+  const match = url?.match(/github\.com\/([\w.-]+)\/([\w.-]+)/);
+  if (!match) return '';
+  const owner = match[1];
+  const name = match[2].replace(/\.git$/, '');
   return (
     `\nGood to know: the original's code is open source at ${url}. ` +
     'Where it solved something hard (data model, integrations, scraping or sync logic), consult that approach rather than reinventing it — ' +
-    'and depart from it freely where a different stack or a simpler shape serves this build better.'
+    'and depart from it freely where a different stack or a simpler shape serves this build better. ' +
+    `To read it: fetch https://api.github.com/repos/${owner}/${name}/git/trees/HEAD?recursive=1 for the full file list (folder pages on github.com won't load), ` +
+    `then any file at https://raw.githubusercontent.com/${owner}/${name}/HEAD/<path>.`
   );
 }
 
