@@ -269,8 +269,12 @@ function renderEmail(r: {
     );
   }
   if (r.hasScreenshot) {
+    // Inline (cid) AND attached: the picture shows in the thread without a
+    // click, and the attachment survives forwarding and mail clients that
+    // hide remote or embedded images
     parts.push(
-      `<p style="color:#666;font-size:13px;margin:0 0 12px">📎 The builder okayed a snapshot of the app — attached as <strong>app-snapshot</strong>.</p>`,
+      `<p style="margin:0 0 4px"><img src="cid:app-snapshot" alt="Snapshot of the app" style="max-width:100%;max-height:520px;border:1px solid #ddd;border-radius:4px"></p>`,
+      `<p style="color:#666;font-size:13px;margin:0 0 12px">📎 The builder okayed a snapshot of the app — also attached as <strong>app-snapshot</strong>.</p>`,
     );
   }
   if (r.reportId) {
@@ -494,6 +498,8 @@ Deno.serve(async (req: Request) => {
         ? [{
             filename: `app-snapshot.${shotMatch[1] === 'png' ? 'png' : 'jpg'}`,
             content: shotMatch[2],
+            content_type: `image/${shotMatch[1]}`,
+            content_id: 'app-snapshot',
           }]
         : undefined;
       await fetch('https://api.resend.com/emails', {

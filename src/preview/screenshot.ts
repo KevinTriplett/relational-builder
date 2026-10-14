@@ -13,6 +13,9 @@
  * Twin: public/screenshot.js — keep the logic in sync.
  */
 
+import { create } from 'zustand';
+import { useBuildLogStore } from '@/report/build-log';
+
 export const SCREENSHOT_SOURCE = `(function () {
   if (window.__rbShotLoaded) return; window.__rbShotLoaded = true;
   var libPromise = null;
@@ -78,6 +81,50 @@ export async function capturePreviewScreenshot(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * The most recent good capture of the running app, kept in memory for the
+ * build report card.
+ *
+ * The card can only capture while a preview iframe is mounted — and on a
+ * phone the chat (where the card lives) and the preview are different tabs,
+ * while on a laptop the Files, Cloud, and other tabs unmount the preview
+ * too. Half of all shared reports arrived without a picture for exactly
+ * that reason. So each engine captures on its own whenever the app stands
+ * (after the first build landed, until the report is resolved) and parks
+ * the result here; the card falls back to it when its own capture finds no
+ * iframe. Same privacy shape as a live capture: it stays on the device
+ * until the builder ticks the box and shares.
+ */
+interface PreviewSnapshotState {
+  dataUrl: string | null;
+  at: number | null;
+  remember: (dataUrl: string) => void;
+}
+
+export const usePreviewSnapshotStore = create<PreviewSnapshotState>(set => ({
+  dataUrl: null,
+  at: null,
+  remember: dataUrl => set({ dataUrl, at: Date.now() }),
+}));
+
+/** A rebuild every few seconds mid-edit shouldn't rasterize every time */
+const REMEMBER_MIN_GAP_MS = 5_000;
+
+/**
+ * Capture the standing preview and remember it — only while a report is
+ * on offer ('armed' once the initial build landed, 'pending' while the card
+ * shows), so a declined or sent report, or a project that never built,
+ * costs nothing. Best-effort; a failed capture leaves the last good one.
+ */
+export async function rememberPreviewSnapshot(): Promise<void> {
+  const offer = useBuildLogStore.getState().offer;
+  if (offer !== 'armed' && offer !== 'pending') return;
+  const { at } = usePreviewSnapshotStore.getState();
+  if (at && Date.now() - at < REMEMBER_MIN_GAP_MS) return;
+  const shot = await capturePreviewScreenshot();
+  if (shot) usePreviewSnapshotStore.getState().remember(shot);
 }
 
 /** Ask the given preview window for a capture and normalize the reply */
