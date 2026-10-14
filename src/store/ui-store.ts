@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import {
+  isBuildDayPath,
   isNewProjectPath,
   pathForView,
   pushPath,
@@ -88,6 +89,14 @@ function applyLocation(initial: boolean): void {
   // own address so a reload doesn't wipe the work that just started
   if (isNewProjectPath(pathname)) {
     startNewProject();
+    useUIStore.setState({ view: 'builder' });
+    replacePath(pathForView('builder'));
+    return;
+  }
+  // /buildday the same way: start the community build day conversation
+  // (the composer fills as the card's detail arrives) and sit at the builder
+  if (isBuildDayPath(pathname)) {
+    void import('@/project/start-build-day').then(m => m.startBuildDay());
     useUIStore.setState({ view: 'builder' });
     replacePath(pathForView('builder'));
     return;

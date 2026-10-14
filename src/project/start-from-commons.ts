@@ -6,6 +6,7 @@ import { useChatStore } from '@/store/chat-store';
 import { useEnvStore } from '@/store/env-store';
 import { fetchCommonsItemDetail, type CommonsCard } from '@/knowledge/commons-items';
 import { frameSlugsForCommonsItem } from '@/knowledge/frames';
+import { BUILD_DAY_FRAME, buildDayOpening } from '@/knowledge/build-day';
 
 /**
  * Remixing a commons practice — the gallery path for the commons shelves
@@ -34,7 +35,10 @@ export async function startFromCommonsItem(card: CommonsCard): Promise<void> {
           : card.kind === 'reference'
             ? `I'd like to plan something for my neighborhood grounded in "${card.title}"${who}.`
             : `I'd like to bring the practice "${card.title}"${who} to my neighborhood.`;
-  const draft = [
+  const frames = frameSlugsForCommonsItem(card);
+  // A build day remix opens the organizer's own conversation, not a
+  // practice-adaptation ask
+  const draft = frames.includes(BUILD_DAY_FRAME.slug) ? buildDayOpening() : [
     opening,
     summary ? `\nWhat it is: ${summary}` : '',
     // When the original's source is a public repo, say so — the model can
@@ -62,7 +66,7 @@ export async function startFromCommonsItem(card: CommonsCard): Promise<void> {
     promptTitle: card.title,
     sourceUrl: card.source_url ?? undefined,
     importedAt: new Date().toISOString(),
-    frames: frameSlugsForCommonsItem(card),
+    frames,
   });
   useChatStore.getState().setDraftMessage(draft);
   useChatStore.getState().setDraftAttachments(card.image_url ? [card.image_url] : null);

@@ -66,6 +66,7 @@ import { MessageInput } from './MessageInput';
 import { CHUNK_MARKER, FILE_REQUEST_MARKER } from './display';
 import { buildPlanPrompt, isPlanApproval, shouldOfferBuild } from './plan-approval';
 import { cheerMicrograntBuild } from '@/report/microgrant-cheer';
+import { noticeBuildDayPlan } from '@/report/build-day-notice';
 import { heldPhotosNote } from '@/project/photo-intent';
 import { markFilesRequested } from '@/knowledge/snapshot-split';
 import { markReferenceDocsRequested } from '@/knowledge/references-prompt';
@@ -488,6 +489,7 @@ export function ChatPanel() {
       shouldOfferBuild(useChatStore.getState().messages, useProjectStore.getState().getFileCount() > 0)
     ) {
       cheerMicrograntBuild();
+      noticeBuildDayPlan();
       setMode('build');
       recordBuildEvent('typed_approval', content.trim().slice(0, 60));
       return handleSend(buildPlanPrompt(useProjectStore.getState().getFileCount() > 0));
@@ -1335,8 +1337,10 @@ export function ChatPanel() {
   }, [queuedMessage, isGenerating, remoteSettled, setMode, handleSend]);
 
   const handleBuildPlan = useCallback(() => {
-    // A gathering fund's first build is worth a cheer to its commons stewards
+    // A gathering fund's first build is worth a cheer to its commons stewards;
+    // a build day's first build is the stewards' heads-up to mint the code
     cheerMicrograntBuild();
+    noticeBuildDayPlan();
     setMode('build');
     // On an existing project the plan is a delta — build only it. From
     // scratch, the plan is the whole first build.

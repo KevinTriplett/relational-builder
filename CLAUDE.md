@@ -113,7 +113,9 @@ Chat/Builder Panel  |  Preview Sandbox (iframe)  |  RTP Knowledge Base Panel
   …). `useUIStore.setView` writes the URL; `initRouting()` adopts it on boot
   and follows back/forward. Deep links need the SPA fallback rewrite in
   `vercel.json`. `#privacy` / `#contact` stay hash pages, above the app shell
-- `src/knowledge/` — Supabase client, RTP principles, context builder, queries
+- `src/knowledge/` — Supabase client, RTP principles, context builder, queries.
+  `build-day.ts` is the community build day journey (frame, scripted plan,
+  featured gallery card, `/buildday`); see `docs/BUILD-DAY-JOURNEY.md`
   `builder-practice.ts` holds the Builder's practices written for other
   tools; `scripts/export-builder-knowledge.mjs` renders it, the principles,
   and the frames to `public/knowledge/*.md` (prebuild) for the RT MCP server.

@@ -1,7 +1,8 @@
 import type { CommonsSearchResult } from './commons-search';
 import { MICROGRANT_FRAME, isMicrograntAsk } from './microgrants';
+import { BUILD_DAY_FRAME, BUILD_DAY_SHELF, isBuildDayAsk } from './build-day';
 
-export { MICROGRANT_FRAME };
+export { MICROGRANT_FRAME, BUILD_DAY_FRAME };
 
 /**
  * Domain frames — principle sets that layer onto the base RTP principles the
@@ -117,6 +118,7 @@ export const FRAMES: Record<string, DomainFrame> = {
   [RELATIONAL_FRAME.slug]: RELATIONAL_FRAME,
   [MICROGRANT_FRAME.slug]: MICROGRANT_FRAME,
   [DELIBERATIVE_FRAME.slug]: DELIBERATIVE_FRAME,
+  [BUILD_DAY_FRAME.slug]: BUILD_DAY_FRAME,
 };
 
 export function framesFromSlugs(slugs: string[] | undefined | null): DomainFrame[] {
@@ -131,6 +133,8 @@ export function frameSlugsForCommonsItem(item: { source_studio_slug?: string | n
   if (item.source_studio_slug === 'microgrants') return [MICROGRANT_FRAME.slug];
   // The deliberation shelf's tools, prompts, and stories start a deliberation build
   if (item.source_studio_slug === 'deliberation') return [DELIBERATIVE_FRAME.slug];
+  // The build day shelf starts the organizer's scripted plan conversation
+  if (item.source_studio_slug === BUILD_DAY_SHELF) return [BUILD_DAY_FRAME.slug];
   if (item.kind === 'recipe') return [PRACTICE_FIRST_FRAME.slug];
   return [];
 }
@@ -220,6 +224,11 @@ export function detectFrames(results: CommonsSearchResult[], query?: string): Do
   }
   if (query && DELIBERATION_ASK.test(query)) {
     frames.push(DELIBERATIVE_FRAME);
+  }
+  // A community build day: only the ask itself can stamp it (it swaps the
+  // plan conversation and tells RTP's stewards), never retrieval alone
+  if (isBuildDayAsk(query)) {
+    frames.push(BUILD_DAY_FRAME);
   }
 
   if (top.length === 0) return frames;

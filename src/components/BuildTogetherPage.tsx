@@ -17,6 +17,7 @@ import {
   ArrowRight,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   DoorOpen,
   Hammer,
   Home,
@@ -24,6 +25,10 @@ import {
   Landmark,
   Building2,
   Video,
+  FileText,
+  Megaphone,
+  Mail,
+  Camera,
 } from 'lucide-react';
 
 /**
@@ -38,6 +43,9 @@ import {
 
 const JOIN_HREF = '/#join';
 const PLAN_HREF = '#plan';
+/** The Builder's own door into the journey: the organizer's four-step
+ *  conversation, then every artifact the day needs (see /buildday in router.ts) */
+const BUILD_DAY_HREF = '/buildday';
 
 function Kicker({ children }: { children: ReactNode }) {
   return (
@@ -284,20 +292,24 @@ export function BuildTogetherPage() {
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
             <a
-              href={PLAN_HREF}
+              href={BUILD_DAY_HREF}
               className="rounded-full px-5 py-2 text-sm font-semibold"
               style={{ background: C.orangeDeep, color: '#FFF6EE' }}
             >
-              Plan one with us
+              Plan and create what you need with Relational Builder
             </a>
             <a
-              href={JOIN_HREF}
+              href={PLAN_HREF}
               className="rounded-full border px-5 py-2 text-sm font-semibold"
               style={{ borderColor: C.border, color: C.body, background: C.card }}
             >
-              Get a builder account
+              Plan one with us
             </a>
           </div>
+          <p className="text-xs" style={{ color: C.muted }}>
+            The Builder walks you through four short steps and makes the plan, the flyer, the landing page, and the note that gets your event code.{' '}
+            <a href={JOIN_HREF} className="underline underline-offset-2">Need a builder account?</a>
+          </p>
         </header>
 
         {/* Two shifts from the hackathon model */}
@@ -488,6 +500,77 @@ export function BuildTogetherPage() {
           </Moment>
         </div>
 
+        {/* The organizer's journey in the Builder */}
+        <section className="space-y-5" id="journey">
+          <div className="text-center space-y-2">
+            <Kicker>Plan it with the Builder</Kicker>
+            <h2 className="text-xl sm:text-2xl font-semibold tracking-tight">Everything your build day needs, from one conversation</h2>
+            <p className="mx-auto max-w-xl text-[15px] leading-relaxed" style={{ color: C.body }}>
+              The tools that run the day are already built. Everything around
+              it, Relational Builder makes with you: a Community Build Day
+              project that grows from the first plan to the recap page, remixed
+              from the Sunset Neighborhood Build-a-thon in San Francisco.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <WhyCard icon={ClipboardList} title="Planned">
+              Four short steps: your place and people, the shape of the day
+              (dreams at the mic, challenges, or deliberate-then-build), what
+              to make now, how it looks. Out comes the plan and a day-of
+              agenda timed to the minute, with a name next to every role and
+              every logistics line.
+            </WhyCard>
+            <WhyCard icon={Megaphone} title="Executed">
+              A landing page with the question as its headline and one RSVP
+              button to wherever your people already sign up. A printable
+              flyer, a square and story social ad, and the host's slides, all
+              in the day's own look.
+            </WhyCard>
+            <WhyCard icon={Mail} title="Set up">
+              The email to RTP's stewards, drafted and ready to send: event
+              name, date, expected size, a suggested event code, links to
+              share. We mint the code and the room key, Share Live, and the
+              demo wall come with it.
+            </WhyCard>
+            <WhyCard icon={LayoutGrid} title="Run">
+              The day itself runs on what's described above: the room key at
+              the door, the live head-count, Share Live for every project,
+              the demo wall at closing. Nothing to build, and the agenda names
+              who does what with each.
+            </WhyCard>
+            <WhyCard icon={Camera} title="Documented">
+              Documenters are a named role. After the day, their photos and
+              the wall become a recap page like the Sunset's: the afternoon as
+              it happened, every dream at the mic, what was built by 5pm, the
+              threads, what's next.
+            </WhyCard>
+            <WhyCard icon={FileText} title="Shared">
+              The recap is a standalone page you can pass around or drop into
+              your own site, and the day offers itself back to the commons for
+              the next neighborhood to remix. The next build day starts from
+              what this one learned.
+            </WhyCard>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+            <a
+              href={BUILD_DAY_HREF}
+              className="inline-flex items-center gap-1.5 rounded-full px-5 py-2 text-sm font-semibold"
+              style={{ background: C.orangeDeep, color: '#FFF6EE' }}
+            >
+              Start your Community Build Day project <ArrowRight className="size-3.5" />
+            </a>
+            <a
+              href="https://dearcrisis.com/buildathon"
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-full border px-5 py-2 text-sm font-semibold"
+              style={{ borderColor: C.border, color: C.body, background: C.card }}
+            >
+              See the Sunset recap
+            </a>
+          </div>
+        </section>
+
         {/* Who might do this */}
         <section className="space-y-5">
           <div className="text-center space-y-2">
@@ -550,13 +633,22 @@ export function BuildTogetherPage() {
           submitLabel="Plan one with us"
           sentNote="Thank you. Josh will reply soon so we can start shaping the day together."
           aside={
-            <a
-              href={JOIN_HREF}
-              className="inline-flex items-center gap-1.5 rounded-full border px-5 py-2 text-sm font-semibold"
-              style={{ borderColor: C.border, color: C.body }}
-            >
-              Get a builder account <ArrowRight className="size-3.5" />
-            </a>
+            <div className="flex flex-wrap gap-2">
+              <a
+                href={BUILD_DAY_HREF}
+                className="inline-flex items-center gap-1.5 rounded-full border px-5 py-2 text-sm font-semibold"
+                style={{ borderColor: C.border, color: C.body }}
+              >
+                Plan it in the Builder <ArrowRight className="size-3.5" />
+              </a>
+              <a
+                href={JOIN_HREF}
+                className="inline-flex items-center gap-1.5 rounded-full border px-5 py-2 text-sm font-semibold"
+                style={{ borderColor: C.border, color: C.body }}
+              >
+                Get a builder account <ArrowRight className="size-3.5" />
+              </a>
+            </div>
           }
         />
 

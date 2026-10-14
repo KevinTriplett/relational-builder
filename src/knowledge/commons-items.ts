@@ -1,6 +1,7 @@
 import { COMMONS_URL, COMMONS_ANON_KEY } from './commons-search';
 import { resolveStudioAssetUrl } from './queries';
 import { toMarkdown } from '@/lib/rich-text';
+import { BUILD_DAY_CARD, BUILD_DAY_CARD_SLUG, BUILD_DAY_CARD_SUMMARY, BUILD_DAY_SHELF } from './build-day';
 
 /**
  * Direct reads of commons_items for the Commons Gallery — the remixable
@@ -169,6 +170,23 @@ export async function fetchMicrograntCards(): Promise<CommonsCard[]> {
 }
 
 /**
+ * Community Build Days: the organizer's journey, from the plan to the recap
+ * page. The featured card leads the whole gallery. The shelf lives in the
+ * commons like every other, but the Builder carries its own copy of the
+ * featured card (knowledge/build-day.ts) so the front door is there even
+ * when the shelf is not seeded yet or the commons is unreachable.
+ */
+export async function fetchBuildDayCards(): Promise<CommonsCard[]> {
+  const rows = await rest<CommonsCard[]>(
+    `commons_items?select=${CARD_COLUMNS}` +
+      `&source_studio_slug=eq.${BUILD_DAY_SHELF}&status=eq.canonical&order=sort_order.asc,title.asc`,
+  ).catch(() => [] as CommonsCard[]);
+  const rest_ = rows.filter(r => r.slug !== BUILD_DAY_CARD_SLUG);
+  const featured = rows.find(r => r.slug === BUILD_DAY_CARD_SLUG) ?? BUILD_DAY_CARD_SUMMARY;
+  return [featured, ...rest_];
+}
+
+/**
  * Contributed: what builders gave back through Relational Builder and a
  * steward approved. Every contribution that comes through the Builder is
  * tagged `relational-builder` by the commons' own submit function, and
@@ -204,6 +222,8 @@ export async function fetchCommonsItemDetail(
     signal,
   );
   const item = rows[0];
-  if (!item) return null;
+  // The featured build day card reads the same whether or not the commons
+  // holds it yet
+  if (!item) return slug === BUILD_DAY_CARD_SLUG ? BUILD_DAY_CARD : null;
   return { ...item, body: item.body ? toMarkdown(item.body, BODY_ASSETS) : item.body };
 }

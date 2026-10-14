@@ -13,6 +13,8 @@ import { MICROGRANT_FRAME } from '@/knowledge/microgrants';
 const FUNCTIONS_URL = `${import.meta.env.VITE_BUILDER_SUPABASE_URL ?? ''}/functions/v1`;
 
 const PROJECT_NAME_RE = /^\s*`?PROJECT-NAME:\s*([^`\n]+?)`?\s*$/im;
+/** The section only the scripted gathering-fund conversation writes */
+const PROGRAM_BRIEF_RE = /^(?:#{2,4}\s+|\*\*)program brief\b/im;
 
 /** Reads the drafted plan: the PROJECT-NAME line and which scope it chose */
 export function readMicrograntPlan(planText: string): { programName: string | null; scope: string | null } {
@@ -41,10 +43,15 @@ export function cheerMicrograntBuild(): void {
   if (useProjectStore.getState().getFileCount() > 0) return;
 
   const messages = useChatStore.getState().messages;
-  const plan = [...messages].reverse().find(m => m.role === 'assistant' && m.isPlan && PROJECT_NAME_RE.test(m.content));
-  // A sensed frame is a guess; a drafted fund plan (one that names the
-  // project) is the evidence. Without one there is nothing to cheer — the
-  // Build button was pressed on a conversation, not a gathering-fund plan.
+  // A sensed frame is a guess; a drafted fund plan is the evidence. Naming
+  // the project was not enough (every plan does that, and two cheers went
+  // out for projects that were not gathering funds) — the plan must carry
+  // the Program brief only the scripted fund conversation writes. Without
+  // one there is nothing to cheer: the Build button was pressed on a
+  // conversation, not a gathering-fund plan.
+  const plan = [...messages]
+    .reverse()
+    .find(m => m.role === 'assistant' && m.isPlan && PROJECT_NAME_RE.test(m.content) && PROGRAM_BRIEF_RE.test(m.content));
   if (!plan) return;
   const { programName, scope } = readMicrograntPlan(plan.content);
   const profile = useAuthStore.getState().profile;

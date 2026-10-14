@@ -13,12 +13,13 @@ import { studioPartnerCredit, studioCommonsPins } from '@/knowledge/studio-conte
 import {
   fetchCivicMediaCards, fetchNeighboringRecipeCards,
   fetchCommunityOrganizingCards, fetchLocalCivicTechCards, fetchMicrograntCards, fetchContributedCards,
-  fetchDeliberationCards, fetchProsocialDesignCards,
+  fetchDeliberationCards, fetchProsocialDesignCards, fetchBuildDayCards,
   fetchCommonsItemDetail,
   type CommonsCard, type CommonsItemDetail,
 } from '@/knowledge/commons-items';
 import { startFromStudioTool } from '@/project/start-from-tool';
 import { startFromCommonsItem } from '@/project/start-from-commons';
+import { BUILD_DAY_CARD_SLUG, BUILD_DAY_SHELF } from '@/knowledge/build-day';
 import { loadGalleryReferences, invalidateGalleryReferences } from '@/cloud/gallery-references';
 import type { GalleryReference, RefSource } from '@/knowledge/gallery-references';
 import {
@@ -69,6 +70,7 @@ import {
 
 const CATEGORIES = [
   { key: 'all', label: 'Everything' },
+  { key: 'build_day', label: 'Build days' },
   { key: 'relational_tech', label: 'Relational tech tools' },
   { key: 'civic_media', label: 'Civic media' },
   { key: 'neighboring', label: 'Neighboring recipes' },
@@ -122,14 +124,14 @@ function galleryNameFor(studioLabel: string): string {
 }
 
 /** Shelf presentation for a commons card */
-type ShelfIconKey = 'newspaper' | 'sprout' | 'users' | 'landmark' | 'coins' | 'gift';
+type ShelfIconKey = 'newspaper' | 'sprout' | 'users' | 'landmark' | 'coins' | 'gift' | 'hammer';
 const SHELF_ICONS: Record<ShelfIconKey, typeof Newspaper> = {
-  newspaper: Newspaper, sprout: Sprout, users: Users, landmark: Landmark, coins: HandCoins, gift: Gift,
+  newspaper: Newspaper, sprout: Sprout, users: Users, landmark: Landmark, coins: HandCoins, gift: Gift, hammer: Hammer,
 };
 
 /** The canonical shelves: a studio slug that is one of these is a fixed
  *  shelf of the commons. Anything else came in as a contribution. */
-const CANONICAL_SHELVES = new Set(['civic-media', 'rtp-canonical', 'community-organizing', 'local-civic-tech', 'microgrants', 'deliberation', 'prosocial-design']);
+const CANONICAL_SHELVES = new Set(['civic-media', 'rtp-canonical', 'community-organizing', 'local-civic-tech', 'microgrants', 'deliberation', 'prosocial-design', BUILD_DAY_SHELF]);
 
 function isContributed(card: CommonsCard): boolean {
   return !CANONICAL_SHELVES.has(card.source_studio_slug ?? '');
@@ -149,6 +151,7 @@ function shelfFor(card: CommonsCard, studioLabel?: string): { label: string; ico
     case 'deliberation': return { label: 'Deliberation', icon: 'users' };
     case 'prosocial-design': return { label: 'Prosocial Design', icon: 'sprout' };
     case 'rtp-canonical': return { label: 'Neighboring', icon: 'sprout' };
+    case BUILD_DAY_SHELF: return { label: 'Community Build Day', icon: 'hammer' };
     default: return { label: studioLabel ?? 'From builders', icon: 'gift' };
   }
 }
@@ -166,7 +169,7 @@ function kindLabel(card: CommonsCard): string {
  *  and each item's own shelf tag just repeats the card header */
 const SHELF_TAGS = new Set([
   'civic-media', 'community-organizing', 'local-civic-tech', 'microgrants', 'deliberation',
-  'prosocial-design', 'design pattern',
+  'prosocial-design', 'design pattern', 'build day',
   // the commons' own provenance tags on a contribution — the card header says it
   'relational-builder', 'contributed-tool', 'contributed-resource', 'contributed-program', 'contributed-story', 'contributed-prompt',
 ]);
@@ -227,6 +230,7 @@ export function CommonsGallery() {
   const [deliberationCards, setDeliberationCards] = useState<CommonsCard[]>([]);
   const [prosocialCards, setProsocialCards] = useState<CommonsCard[]>([]);
   const [contributedCards, setContributedCards] = useState<CommonsCard[]>([]);
+  const [buildDayCards, setBuildDayCards] = useState<CommonsCard[]>([]);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Semantic ranking from the commons' hybrid search: slug/title → rank
@@ -307,6 +311,7 @@ export function CommonsGallery() {
     fetchDeliberationCards().then(setDeliberationCards).catch(() => {});
     fetchProsocialDesignCards().then(setProsocialCards).catch(() => {});
     fetchContributedCards().then(setContributedCards).catch(() => {});
+    fetchBuildDayCards().then(setBuildDayCards).catch(() => {});
     loadGalleryReferences().then(setReferences).catch(() => {});
   }, []);
 
@@ -530,6 +535,10 @@ export function CommonsGallery() {
       .map(c => ({ key: `commons-${c.slug}`, type: 'commons' as const, card: c }));
     const prosocialEntries: GalleryEntry[] = storyCut(prosocialCards, 'prosocial')
       .map(c => ({ key: `commons-${c.slug}`, type: 'commons' as const, card: c }));
+    // Community build days lead the whole gallery: the featured card is the
+    // front door to planning one, and it sits above every shelf
+    const buildDayEntries: GalleryEntry[] = storyCut(buildDayCards, 'build_day')
+      .map(c => ({ key: `commons-${c.slug}`, type: 'commons' as const, card: c }));
     // Approved contributions from builders, whatever studio they came from.
     // One that also rides a fixed shelf (a microgrant program offered back)
     // is deduped below in favour of that shelf.
@@ -563,16 +572,17 @@ export function CommonsGallery() {
     // A card can ride two shelves (the microgrant gathering recipe is both a
     // neighboring recipe and a microgrants card): the first shelf keeps it
     const seen = new Set<string>();
-    const all = [...toolEntries, ...civicEntries, ...neighboringEntries, ...organizingEntries, ...civicTechEntries, ...micrograntEntries, ...deliberationEntries, ...prosocialEntries, ...contributedEntries, ...sharedEntries, ...kbStoryEntries]
+    const all = [...buildDayEntries, ...toolEntries, ...civicEntries, ...neighboringEntries, ...organizingEntries, ...civicTechEntries, ...micrograntEntries, ...deliberationEntries, ...prosocialEntries, ...contributedEntries, ...sharedEntries, ...kbStoryEntries]
       .filter(e => !seen.has(e.key) && (seen.add(e.key), true));
 
     if (!q) {
-      // Browsing order: your studios' tools lead, then each shelf in turn
-      return all.sort((a, b) => {
-        const aBadge = a.type === 'tool' && badgesFor(a.tool).length > 0 ? 0 : 1;
-        const bBadge = b.type === 'tool' && badgesFor(b.tool).length > 0 ? 0 : 1;
-        return aBadge - bBadge;
-      });
+      // Browsing order: the featured build day card, then your studios'
+      // tools, then each shelf in turn
+      const rank = (e: GalleryEntry) =>
+        e.type === 'commons' && e.card.slug === BUILD_DAY_CARD_SLUG ? 0
+          : e.type === 'tool' && badgesFor(e.tool).length > 0 ? 1
+            : 2;
+      return all.sort((a, b) => rank(a) - rank(b));
     }
 
     // Searching: semantic rank leads (the commons understands the ask),
@@ -582,7 +592,7 @@ export function CommonsGallery() {
       .filter(x => x.rank !== undefined || x.sub)
       .sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999))
       .map(x => x.e);
-  }, [galleryTools, civicCards, neighboringCards, organizingCards, civicTechCards, micrograntCards, deliberationCards, prosocialCards, contributedCards, stories, category, query, badgesFor, semanticRank, scope, studioLibrary, links]);
+  }, [galleryTools, civicCards, neighboringCards, organizingCards, civicTechCards, micrograntCards, deliberationCards, prosocialCards, contributedCards, buildDayCards, stories, category, query, badgesFor, semanticRank, scope, studioLibrary, links]);
 
   const promptsFor = (tool: Tool) => prompts.filter(p => p.parent_tool_id === tool.id);
 
@@ -654,6 +664,9 @@ export function CommonsGallery() {
       ...prosocialCards.map(c => ({
         source: 'commons' as const, id: c.slug, title: c.title, kind: c.kind, group: 'Prosocial design',
       })),
+      ...buildDayCards.map(c => ({
+        source: 'commons' as const, id: c.slug, title: c.title, kind: c.kind, group: 'Build days',
+      })),
       ...studioLibrary.map(i => ({
         source: 'studio' as const, id: i.id, title: i.title, kind: i.kind, group: 'Studio libraries',
       })),
@@ -663,7 +676,7 @@ export function CommonsGallery() {
       loadGalleryReferences().then(setReferences).catch(() => {});
     };
     return { options, onChanged };
-  }, [authUser, galleryTools, stories, civicCards, neighboringCards, organizingCards, civicTechCards, micrograntCards, deliberationCards, prosocialCards, contributedCards, studioLibrary]);
+  }, [authUser, galleryTools, stories, civicCards, neighboringCards, organizingCards, civicTechCards, micrograntCards, deliberationCards, prosocialCards, contributedCards, buildDayCards, studioLibrary]);
 
   /** Open a connection's other end, whichever shelf it lives on */
   function openRef(source: RefSource, id: string): boolean {
@@ -684,7 +697,7 @@ export function CommonsGallery() {
       return s ? open(() => setStoryDetail(s)) : false;
     }
     if (source === 'commons') {
-      const c = [...civicCards, ...neighboringCards, ...organizingCards, ...civicTechCards, ...micrograntCards, ...deliberationCards, ...prosocialCards, ...contributedCards].find(x => x.slug === id);
+      const c = [...buildDayCards, ...civicCards, ...neighboringCards, ...organizingCards, ...civicTechCards, ...micrograntCards, ...deliberationCards, ...prosocialCards, ...contributedCards].find(x => x.slug === id);
       return c ? open(() => setCommonsDetail(c)) : false;
     }
     const i = studioLibrary.find(x => x.id === id);
@@ -1415,6 +1428,9 @@ function RecipeCard({
 }) {
   const shelf = shelfFor(card, shelfLabel);
   const ShelfIcon = SHELF_ICONS[shelf.icon];
+  // The build day card's button starts the organizer's journey — "Build
+  // yours", not "Plan this": the day is the thing being made
+  const buildDay = card.source_studio_slug === BUILD_DAY_SHELF;
   const [imgBroken, setImgBroken] = useState(false);
   return (
     <div className="group border rounded-xl overflow-hidden flex flex-col bg-background hover:border-foreground/25 transition-colors">
@@ -1462,8 +1478,8 @@ function RecipeCard({
             Details
           </Button>
           <Button size="sm" className="h-7 text-xs flex-1" disabled={anyBusy} onClick={onPlan}>
-            {busy ? <Loader2 className="size-3 animate-spin mr-1" /> : <MapIcon className="size-3 mr-1" />}
-            Plan this
+            {busy ? <Loader2 className="size-3 animate-spin mr-1" /> : buildDay ? <Hammer className="size-3 mr-1" /> : <MapIcon className="size-3 mr-1" />}
+            {buildDay ? 'Build yours' : 'Plan this'}
           </Button>
         </div>
       </div>
@@ -1573,8 +1589,8 @@ function RecipeDetailDialog({
 
         <div className="flex flex-wrap gap-2 pt-1">
           <Button size="sm" disabled={busy} onClick={onPlan}>
-            {busy ? <Loader2 className="size-3.5 mr-1.5 animate-spin" /> : <MapIcon className="size-3.5 mr-1.5" />}
-            Plan this for your place
+            {busy ? <Loader2 className="size-3.5 mr-1.5 animate-spin" /> : card.source_studio_slug === BUILD_DAY_SHELF ? <Hammer className="size-3.5 mr-1.5" /> : <MapIcon className="size-3.5 mr-1.5" />}
+            {card.source_studio_slug === BUILD_DAY_SHELF ? 'Build your build day' : 'Plan this for your place'}
           </Button>
           {card.source_url && (
             <a

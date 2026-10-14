@@ -42,6 +42,14 @@ const VIEW_PATHS: Record<AppView, string> = {
  */
 export const NEW_PROJECT_PATH = '/new';
 
+/**
+ * Another doing-address: opening it starts the community build day
+ * conversation (the featured commons card's "Build yours") and lands in the
+ * builder. The /buildtogether page links here, so it is a place people
+ * share and bookmark.
+ */
+export const BUILD_DAY_PATH = '/buildday';
+
 export function pathForView(view: AppView): string {
   return VIEW_PATHS[view] ?? '/';
 }
@@ -62,6 +70,10 @@ export function viewForPath(pathname: string): AppView | null {
 
 export function isNewProjectPath(pathname: string): boolean {
   return normalize(pathname) === NEW_PROJECT_PATH;
+}
+
+export function isBuildDayPath(pathname: string): boolean {
+  return normalize(pathname) === BUILD_DAY_PATH;
 }
 
 /**

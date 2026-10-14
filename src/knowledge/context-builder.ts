@@ -5,6 +5,7 @@ import { formatCivicDataForPrompt, type CityDataEndpoint } from './civic-data';
 import { DEMO_DATA_EVENT_BLOCK, isDemoDataEvent } from './event-modes';
 import type { DomainFrame } from './frames';
 import { MICROGRANT_FRAME, MICROGRANT_PLAN_INSTRUCTIONS } from './microgrants';
+import { BUILD_DAY_FRAME, BUILD_DAY_PLAN_INSTRUCTIONS } from './build-day';
 import { PINNED_VERSIONS } from '@/preview/bundler/versions';
 import { THEME_TEMPLATE } from '@/kit/theme';
 import type { Tool, Story } from './types';
@@ -727,6 +728,10 @@ export function buildPromptContext(
   // four-stage plan conversation instead of open visioning
   const micrograntPlan =
     !hasProject && (options.frames ?? []).some(f => f.slug === MICROGRANT_FRAME.slug);
+  // A community build day started from scratch runs the organizer's
+  // four-stage conversation the same way
+  const buildDayPlan =
+    !hasProject && (options.frames ?? []).some(f => f.slug === BUILD_DAY_FRAME.slug);
   const base =
     options.mode === 'plan'
       ? options.builderProfilePage && !hasProject
@@ -735,7 +740,9 @@ export function buildPromptContext(
           ? PLAN_EXISTING_INSTRUCTIONS
           : micrograntPlan
             ? MICROGRANT_PLAN_INSTRUCTIONS
-            : PLAN_INSTRUCTIONS
+            : buildDayPlan
+              ? BUILD_DAY_PLAN_INSTRUCTIONS
+              : PLAN_INSTRUCTIONS
       : BASE_INSTRUCTIONS;
   const sections = [base, '', formatPrinciplesForPrompt()];
   if (options.builderProfilePage && base !== PROFILE_PLAN_INSTRUCTIONS) {
