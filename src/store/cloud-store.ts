@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { builderClient } from '@/cloud/builder-client';
-import { useAuthStore } from '@/store/auth-store';
+import { currentAuthor, useAuthStore } from '@/store/auth-store';
 import { useProjectStore, type ProjectLineage } from '@/store/project-store';
 import { useProviderStore } from '@/store/provider-store';
 import { useChatStore, type ChatMode, type DisplayMessage } from '@/store/chat-store';
@@ -252,13 +252,7 @@ function unsubscribe() {
 }
 
 function myDisplayName(): string {
-  const { profile, user } = useAuthStore.getState();
-  return (
-    profile?.display_name?.trim() ||
-    profile?.full_name?.trim() ||
-    user?.email?.split('@')[0] ||
-    'Someone'
-  );
+  return currentAuthor()?.name ?? 'Someone';
 }
 
 function readPeers(): Peer[] {

@@ -115,6 +115,24 @@ interface AuthState {
   saveProfile: (fields: Partial<BuilderProfile>) => Promise<{ error: string | null }>;
 }
 
+/**
+ * The signed-in person as a message author: the name collaborators know
+ * them by (display name, then full name, then the email's local part) plus
+ * their user id. One answer for chat bubbles, collaborator notes and
+ * presence, so a person reads the same everywhere. Null when signed out —
+ * a solo, local-only chat has no one to attribute to.
+ */
+export function currentAuthor(): { id: string; name: string } | null {
+  const { profile, user } = useAuthStore.getState();
+  if (!user) return null;
+  const name =
+    profile?.display_name?.trim() ||
+    profile?.full_name?.trim() ||
+    user.email?.split('@')[0] ||
+    'Someone';
+  return { id: user.id, name };
+}
+
 export const useAuthStore = create<AuthState>()((set, get) => ({
   user: null,
   profile: null,

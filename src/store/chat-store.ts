@@ -5,6 +5,7 @@ import type { ChatMessage } from '@/providers/types';
 import { buildSystemPrompt } from '@/knowledge/context-builder';
 import { collapseFileBlocks } from '@/project/code-extractor';
 import { recordBuildEvent } from '@/report/build-log';
+import { currentAuthor } from '@/store/auth-store';
 
 /** `message` is human-to-human: a note for collaborators the AI never sees */
 export type ChatMode = 'plan' | 'build' | 'message';
@@ -65,8 +66,14 @@ export interface DisplayMessage {
   /** A note from one human to the others on a shared project. Lives in the
    * conversation (and syncs with it) but is never sent to the AI. */
   isCollabNote?: boolean;
-  /** Who wrote a collaborator note — display name or email at write time */
+  /** Who sent this — display name at write time. Stamped on every human
+   * message (build asks and collaborator notes alike) when signed in, so a
+   * shared project's chat shows who asked for what. Absent on messages from
+   * before this existed and on signed-out, local-only chats. */
   authorName?: string;
+  /** The author's user id — lets the UI say "you" for your own messages
+   * even if your display name changes later */
+  authorId?: string;
   /** Commons entries this reply actually drew on (surfaced by retrieval AND
    * named in the reply) — rendered as "Drew on the commons" chips that open
    * the entry's gallery card */
@@ -174,7 +181,7 @@ interface ChatState {
   /** Add a Builder-generated note (e.g. GitHub pull summary) to the conversation */
   addSyncMessage: (content: string, label?: string) => void;
   /** Add a human-to-human note for collaborators — stays out of the AI's history */
-  addCollabNote: (content: string, author?: string, attachments?: string[]) => void;
+  addCollabNote: (content: string, attachments?: string[]) => void;
   startAssistantMessage: (isPlan?: boolean) => string;
   /** Add an imported build plan (e.g. from RTP Studio) as a plan message */
   importBuildPlan: (planMarkdown: string) => void;
@@ -341,6 +348,8 @@ export const useChatStore = create<ChatState>()(persist((set, get) => ({
     }),
 
   addUserMessage: (content: string, attachments?: string[], auto?: { label?: string }, photoNote?: string) => {
+    // Auto sends are the Builder's own turns (fixes, reviews) — not anyone's ask
+    const author = auto ? null : currentAuthor();
     const msg: DisplayMessage = {
       id: nextId(),
       role: 'user',
@@ -350,6 +359,7 @@ export const useChatStore = create<ChatState>()(persist((set, get) => ({
       photoNote: photoNote || undefined,
       isAuto: auto ? true : undefined,
       autoLabel: auto?.label,
+      ...(author ? { authorName: author.name, authorId: author.id } : {}),
     };
     set(state => ({ messages: [...state.messages, msg] }));
   },
@@ -380,14 +390,15 @@ export const useChatStore = create<ChatState>()(persist((set, get) => ({
     set(state => ({ messages: [...state.messages, msg] }));
   },
 
-  addCollabNote: (content: string, author?: string, attachments?: string[]) => {
+  addCollabNote: (content: string, attachments?: string[]) => {
+    const author = currentAuthor();
     const msg: DisplayMessage = {
       id: nextId(),
       role: 'user',
       content,
       timestamp: Date.now(),
       isCollabNote: true,
-      ...(author ? { authorName: author } : {}),
+      ...(author ? { authorName: author.name, authorId: author.id } : {}),
       attachments: attachments?.length ? attachments : undefined,
     };
     set(state => ({ messages: [...state.messages, msg] }));

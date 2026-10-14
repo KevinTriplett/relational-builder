@@ -4,6 +4,8 @@ import remarkGfm from 'remark-gfm';
 import { buildNotifyGranted } from '@/notify/build-ready';
 import { useChatStore, type DisplayMessage } from '@/store/chat-store';
 import { useProjectStore } from '@/store/project-store';
+import { useCloudStore } from '@/store/cloud-store';
+import { useAuthStore } from '@/store/auth-store';
 import { usePanelStore } from '@/store/panel-store';
 import { artifactDisplay } from '@/project/display-name';
 import { useUIStore } from '@/store/ui-store';
@@ -340,6 +342,10 @@ export function MessageList({ messages, onBuildPlan, isGenerating }: MessageList
   // Reading back through history shouldn't fight the auto-scroll — only
   // follow the stream while the person is already near the bottom
   const [nearBottom, setNearBottom] = useState(true);
+  // On a shared project, build asks carry the sender's name so everyone can
+  // tell whose ask the AI is answering. Solo projects stay unlabelled.
+  const shared = useCloudStore(s => s.members.length > 0);
+  const myId = useAuthStore(s => s.user?.id);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -428,6 +434,7 @@ export function MessageList({ messages, onBuildPlan, isGenerating }: MessageList
           }
           const prev = messages[i - 1];
           const newSitting = !prev || msg.timestamp - prev.timestamp > SITTING_GAP_MS;
+          const authorLabel = shared ? senderLabel(messages, i, myId, newSitting) : undefined;
           return (
             <div key={msg.id} data-msg-id={msg.id}>
               {newSitting && (
@@ -435,7 +442,7 @@ export function MessageList({ messages, onBuildPlan, isGenerating }: MessageList
                   {formatSitting(msg.timestamp)}
                 </p>
               )}
-              <MessageBubble message={msg} />
+              <MessageBubble message={msg} authorLabel={authorLabel} />
             </div>
           );
         })}
@@ -565,10 +572,53 @@ function CollabNote({ message }: { message: DisplayMessage }) {
   );
 }
 
+/** A human's own turn: a build ask or a collaborator note, never the
+ * Builder's auto sends (fixes, reviews). */
+function isHumanTurn(m: DisplayMessage): boolean {
+  return m.role === 'user' && !m.isAuto;
+}
+
+/**
+ * The name to show above a build ask on a shared project — or nothing.
+ * Shown when the sender changes from the previous human turn (a note
+ * counts, since it already carries its author) or when a new sitting opens,
+ * so one person's run of asks isn't captioned twenty times over. Messages
+ * from before authors were recorded carry no name rather than a guess.
+ */
+function senderLabel(
+  messages: DisplayMessage[],
+  index: number,
+  myId: string | undefined,
+  newSitting: boolean,
+): string | undefined {
+  const msg = messages[index];
+  if (!isHumanTurn(msg) || msg.isCollabNote || !msg.authorName) return undefined;
+  if (!newSitting) {
+    for (let j = index - 1; j >= 0; j--) {
+      const m = messages[j];
+      if (!isHumanTurn(m)) continue;
+      const same = msg.authorId && m.authorId ? m.authorId === msg.authorId : m.authorName === msg.authorName;
+      return same ? undefined : nameFor(msg, myId);
+    }
+  }
+  return nameFor(msg, myId);
+}
+
+function nameFor(m: DisplayMessage, myId: string | undefined): string {
+  return myId && m.authorId === myId ? 'You' : m.authorName ?? 'Someone';
+}
+
 // Memoized: the store appends streamed tokens by remapping the messages
 // array, so the list re-renders per token — without this, every bubble in
 // the history re-ran its full markdown parse for each token of a long build.
-const MessageBubble = memo(function MessageBubble({ message }: { message: DisplayMessage }) {
+const MessageBubble = memo(function MessageBubble({
+  message,
+  authorLabel,
+}: {
+  message: DisplayMessage;
+  /** Sender's name to caption a build ask with (shared projects only) */
+  authorLabel?: string;
+}) {
   const isUser = message.role === 'user';
   const checkpoints = useProjectStore(s => s.checkpoints);
   const activeCheckpointId = useProjectStore(s => s.activeCheckpointId);
@@ -610,6 +660,9 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Displa
 
   return (
     <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
+      {isUser && authorLabel && (
+        <span className="mb-1 pr-1 text-xs text-muted-foreground">{authorLabel}</span>
+      )}
       <div
         className={`text-[0.9375rem] ${
           isUser
