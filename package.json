@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "knowledge": "node scripts/export-builder-knowledge.mjs",
+    "prebuild": "node scripts/export-builder-knowledge.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

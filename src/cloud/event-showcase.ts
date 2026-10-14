@@ -20,13 +20,26 @@ export interface ShowcaseEntry {
   project_name: string;
   one_liner: string | null;
   screenshot_url: string | null;
-  deck_url: string;
+  /** The Share Live deck. Null for a build pinned from outside the Builder
+   *  (the RT MCP server or the build day inbox): no deck, just the card. */
+  deck_url: string | null;
   demo_url: string | null;
   /** One way to reach the builder, only if they offered it in Share Live —
    *  the label is theirs ("Email", "Phone", "Website", or their own word) */
   contact_label: string | null;
   contact_value: string | null;
+  /** Which door the entry came through: Share Live in the Builder, an AI
+   *  tool through the RT MCP server, or the build day inbox */
+  submitted_via: 'builder' | 'mcp' | 'email';
   created_at: string;
+}
+
+/** True when a card came from a builder working in their own tools —
+ *  there is no deck to present, and the wall says so instead of pretending */
+export function isOutsideBuild(entry: Pick<ShowcaseEntry, 'submitted_via' | 'deck_url'>): boolean {
+  // submitted_via is absent until the open-door migration runs; a missing
+  // value means the Builder's own door
+  return (entry.submitted_via ?? 'builder') !== 'builder' || !entry.deck_url;
 }
 
 /** The gallery's scope value for one event's shelf — a token no studio

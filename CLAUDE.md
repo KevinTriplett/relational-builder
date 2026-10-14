@@ -114,6 +114,12 @@ Chat/Builder Panel  |  Preview Sandbox (iframe)  |  RTP Knowledge Base Panel
   and follows back/forward. Deep links need the SPA fallback rewrite in
   `vercel.json`. `#privacy` / `#contact` stay hash pages, above the app shell
 - `src/knowledge/` — Supabase client, RTP principles, context builder, queries
+  `builder-practice.ts` holds the Builder's practices written for other
+  tools; `scripts/export-builder-knowledge.mjs` renders it, the principles,
+  and the frames to `public/knowledge/*.md` (prebuild) for the RT MCP server.
+  `supabase/functions/commons-bridge/` is the server's door into the
+  Builder (build day wall, civic endpoints, seeds, the build day inbox) —
+  see `docs/MCP-SERVER.md`
 - `src/components/` — React components (UI lives here)
 - `src/components/Chat/` — Chat interface (panel, messages, input, code blocks)
 - `src/components/ui/` — shadcn/ui primitives (don't edit directly)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
-import { removeFromShowcase, type ShowcaseEntry } from '@/cloud/event-showcase';
+import { removeFromShowcase, isOutsideBuild, type ShowcaseEntry } from '@/cloud/event-showcase';
 import { fetchEventShow, eventShowLink } from '@/cloud/event-join';
 import { contactHref } from '@/project/share-live';
 import { useAuthStore } from '@/store/auth-store';
@@ -120,21 +120,31 @@ export function EventShelf({
       ) : entries.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           Nothing on the {name} shelf yet. When someone at the event uses Share
-          Live and pins their build, it shows up here for the whole room.
+          Live and pins their build, or shares it from their own AI tool, it
+          shows up here for the whole room.
         </p>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {entries.map(entry => (
             <div key={entry.id} className="rounded-lg border overflow-hidden flex flex-col bg-background">
               {entry.screenshot_url && (
-                <a href={entry.deck_url} target="_blank" rel="noreferrer" className="block">
+                (entry.deck_url ?? entry.demo_url) ? (
+                  <a href={entry.deck_url ?? entry.demo_url ?? undefined} target="_blank" rel="noreferrer" className="block">
+                    <img
+                      src={entry.screenshot_url}
+                      alt={`${entry.project_name} screenshot`}
+                      loading="lazy"
+                      className="w-full h-32 object-cover object-top border-b"
+                    />
+                  </a>
+                ) : (
                   <img
                     src={entry.screenshot_url}
                     alt={`${entry.project_name} screenshot`}
                     loading="lazy"
                     className="w-full h-32 object-cover object-top border-b"
                   />
-                </a>
+                )
               )}
               <div className="p-3 space-y-1 flex-1 flex flex-col">
                 <div className="flex items-start gap-2">
@@ -154,19 +164,27 @@ export function EventShelf({
                   <p className="text-xs text-muted-foreground leading-relaxed">{entry.one_liner}</p>
                 )}
                 {entry.builder_name && (
-                  <p className="text-xs text-muted-foreground/70">by {entry.builder_name}</p>
+                  <p className="text-xs text-muted-foreground/70">
+                    by {entry.builder_name}
+                    {isOutsideBuild(entry) && <span> · built with their own tools</span>}
+                  </p>
+                )}
+                {!entry.builder_name && isOutsideBuild(entry) && (
+                  <p className="text-xs text-muted-foreground/70">built with their own tools</p>
                 )}
                 <ShowcaseContact entry={entry} className="text-xs text-muted-foreground max-w-full" />
                 <div className="flex gap-3 pt-1.5 mt-auto">
-                  <a
-                    href={entry.deck_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-                  >
-                    <Presentation className="size-3" />
-                    Slides
-                  </a>
+                  {entry.deck_url && (
+                    <a
+                      href={entry.deck_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                    >
+                      <Presentation className="size-3" />
+                      Slides
+                    </a>
+                  )}
                   {entry.demo_url && (
                     <a
                       href={entry.demo_url}

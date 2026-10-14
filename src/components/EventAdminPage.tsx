@@ -331,9 +331,17 @@ function EventConsole({
                 <span className="font-medium">{d.project_name}</span>
                 {d.builder_name && <span className="text-xs text-muted-foreground">by {d.builder_name}</span>}
                 <span className="text-xs text-muted-foreground/70">{fmtDay(d.created_at)}</span>
-                <a href={d.deck_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
-                  <ExternalLink className="size-3" /> Slides
-                </a>
+                {d.deck_url ? (
+                  <a href={d.deck_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
+                    <ExternalLink className="size-3" /> Slides
+                  </a>
+                ) : d.demo_url ? (
+                  <a href={d.demo_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
+                    <ExternalLink className="size-3" /> Open the app
+                  </a>
+                ) : (
+                  <span className="text-xs text-muted-foreground/70">own tools, no link</span>
+                )}
                 <button
                   onClick={() => void removeDeck(d)}
                   disabled={busy !== null}

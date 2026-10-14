@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-10-14T04:40:52.633Z",
+  "documents": [
+    {
+      "slug": "builder-principles",
+      "path": "/knowledge/builder-principles.md",
+      "title": "Relational Technology Principles, as Relational Builder carries them"
+    },
+    {
+      "slug": "builder-practice",
+      "path": "/knowledge/builder-practice.md",
+      "title": "How Relational Builder builds"
+    },
+    {
+      "slug": "builder-frames",
+      "path": "/knowledge/builder-frames.md",
+      "title": "Domain frames",
+      "frames": [
+        {
+          "slug": "civic-media",
+          "label": "Civic Media"
+        },
+        {
+          "slug": "practice-first",
+          "label": "Practice-First"
+        },
+        {
+          "slug": "relational",
+          "label": "Relational"
+        },
+        {
+          "slug": "microgrants",
+          "label": "Gathering Fund"
+        },
+        {
+          "slug": "deliberative",
+          "label": "Deliberative"
+        }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { fetchEventShow, type EventShow } from '@/cloud/event-join';
-import type { ShowcaseEntry } from '@/cloud/event-showcase';
+import { isOutsideBuild, type ShowcaseEntry } from '@/cloud/event-showcase';
 import { ShowcaseContact } from '@/components/EventShowcase';
 import { LANDING_COLORS as C } from '@/components/Landing';
 import {
@@ -79,8 +79,8 @@ export function EventShowPage({ code }: { code: string }) {
           {show && show.name && (
             <p className="text-sm" style={{ color: C.muted }}>
               {show.entries.length === 0
-                ? 'Nothing shared yet. Decks appear here as builders Share Live and pin to the wall.'
-                : `${show.entries.length} ${show.entries.length === 1 ? 'deck' : 'decks'}, in the order they were shared. Room key ${code}.`}
+                ? 'Nothing shared yet. Builds appear here as people Share Live in the Builder, or share from their own AI tools.'
+                : `${show.entries.length} ${show.entries.length === 1 ? 'build' : 'builds'}, in the order they were shared. Room key ${code}.`}
             </p>
           )}
         </header>
@@ -137,6 +137,9 @@ export function EventShowPage({ code }: { code: string }) {
                     {entry.builder_name && (
                       <span className="text-sm" style={{ color: C.muted }}>by {entry.builder_name}</span>
                     )}
+                    {isOutsideBuild(entry) && (
+                      <span className="text-xs" style={{ color: C.muted }}>built with their own tools</span>
+                    )}
                   </div>
                   {entry.one_liner && <p className="text-sm" style={{ color: C.body }}>{entry.one_liner}</p>}
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-xs" style={{ color: C.muted }}>
@@ -149,14 +152,16 @@ export function EventShowPage({ code }: { code: string }) {
                     >
                       <Presentation className="size-3" /> Present from here
                     </button>
-                    <a
-                      href={entry.deck_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 hover:underline underline-offset-4"
-                    >
-                      <ExternalLink className="size-3" /> Slides
-                    </a>
+                    {entry.deck_url && (
+                      <a
+                        href={entry.deck_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 hover:underline underline-offset-4"
+                      >
+                        <ExternalLink className="size-3" /> Slides
+                      </a>
+                    )}
                     {entry.demo_url && (
                       <a
                         href={entry.demo_url}
@@ -175,9 +180,10 @@ export function EventShowPage({ code }: { code: string }) {
         )}
 
         <p className="text-xs" style={{ color: C.muted }}>
-          A deck is on this list when its builder ticked "pin to the demo wall" in
-          Share Live. Re-sharing a project moves it to the end. Links lapse 30 days
-          after sharing, and the list fades with them.
+          A build is on this list when its builder ticked "pin to the demo wall" in
+          Share Live, or shared it from their own AI tool through the Relational
+          Tech MCP server or the build day inbox. Re-sharing a project moves it to
+          the end. Links lapse 30 days after sharing, and the list fades with them.
         </p>
       </div>
     </div>
@@ -233,13 +239,33 @@ function Presenter({
 
   return (
     <div className="fixed inset-0 flex flex-col" style={{ background: '#2A1F18' }}>
-      <iframe
-        key={entry.id}
-        src={entry.deck_url}
-        title={entry.project_name}
-        className="flex-1 w-full border-0 bg-white"
-        allow="fullscreen"
-      />
+      {entry.deck_url || entry.demo_url ? (
+        <iframe
+          key={entry.id}
+          src={entry.deck_url ?? entry.demo_url ?? undefined}
+          title={entry.project_name}
+          className="flex-1 w-full border-0 bg-white"
+          allow="fullscreen"
+        />
+      ) : (
+        // A build shared from outside the Builder with no link: the card is
+        // the slide — picture, name, line, builder
+        <div key={entry.id} className="flex-1 flex flex-col items-center justify-center gap-6 p-10 text-center text-white">
+          {entry.screenshot_url && (
+            <img
+              src={entry.screenshot_url}
+              alt=""
+              className="max-h-[60vh] max-w-full rounded-lg object-contain"
+              style={{ border: '1px solid rgba(255,255,255,0.2)' }}
+            />
+          )}
+          <div className="space-y-2">
+            <h2 className="text-4xl font-semibold tracking-tight">{entry.project_name}</h2>
+            {entry.one_liner && <p className="text-xl text-white/80 max-w-2xl">{entry.one_liner}</p>}
+            {entry.builder_name && <p className="text-white/60">by {entry.builder_name}</p>}
+          </div>
+        </div>
+      )}
       <div
         className="flex items-center gap-3 px-3 py-2 text-sm text-white/90"
         style={{ background: '#2A1F18' }}
