@@ -156,7 +156,7 @@ The plan and the agenda **point at these by name** (the room key, Share Live, th
 
 ### The steward request (`program/steward-request.md`)
 
-RTP's stewards set every build day up by hand: they mint the event code, open the Event Admin page to the organizer, and make sure the wall and the room key are ready. The organizer asks by email, and the Builder drafts the email as a short document the organizer copies and sends to **josh@relationaltechproject.org** (subject: "Build day: <event name>, <date>"). It carries, as a tidy list:
+RTP's stewards set every build day up by hand: they mint the event code, open the Event Admin page to the organizer, and make sure the wall and the room key are ready. The organizer asks by email, and the Builder drafts the email as a short document the organizer copies and sends to **humans@relationaltechproject.org** (subject: "Build day: <event name>, <date>"). It carries, as a tidy list:
 - the event name and the place (or "online"), and who is convening it
 - the date and the hours
 - the expected number of participants (a range is fine)

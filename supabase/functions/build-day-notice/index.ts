@@ -100,7 +100,7 @@ Deno.serve(async (req: Request) => {
   const where = rows[1][1] ?? rows[10][1];
   const subject = `🔨 ${name} is being planned${where ? ` — ${where}` : ''}`;
   const intro = 'An organizer just approved their community build day plan in Relational Builder and the first build (the plan, the agenda, the landing page, the flyer, the steward request) is underway. Expect their email asking for an event code; this is the heads-up.';
-  const outro = 'This note carries no name or email on purpose. The organizer’s own steward request arrives at josh@relationaltechproject.org when they send it; a build report, if they opt in, arrives separately.';
+  const outro = 'This note carries no name or email on purpose. The organizer’s own steward request arrives at humans@relationaltechproject.org when they send it; a build report, if they opt in, arrives separately.';
 
   const lines = [
     intro,

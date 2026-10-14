@@ -41,7 +41,7 @@ the frame as practice.
 community already uses — Luma for the Sunset), `materials/flyer.html`,
 `materials/social.html` (square + story), `materials/slides.html` (the
 host's deck, distilled from the Sunset deck), and
-`program/steward-request.md`: the email to josh@relationaltechproject.org
+`program/steward-request.md`: the email to humans@relationaltechproject.org
 with the event name, date, expected size, a suggested event code,
 organizer emails, and links. That email is how the stewards mint the code.
 
