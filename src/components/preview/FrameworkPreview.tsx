@@ -13,8 +13,10 @@ import { INSPECT_SOURCE } from '@/preview/inspect-source';
 import {
   captureFromIframe,
   registerPreviewScreenshotter,
+  rememberPreviewSnapshot,
   SCREENSHOT_SOURCE,
 } from '@/preview/screenshot';
+import { useBuildLogStore } from '@/report/build-log';
 import { PointAtIt } from './PointAtIt';
 import { FixBanner } from './FixBanner';
 import type { PreviewHandle } from './PreviewToolbar';
@@ -176,6 +178,20 @@ export function FrameworkPreview({
   // Offer the toolbar its controls for this engine
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
+  // Once a document has loaded and stands without error, remember a
+  // snapshot for the build report — the card may never see this iframe
+  // (other tab, phone layout), so the picture is taken while it's here.
+  // The delay lets fonts, images, and first effects settle. The offer is a
+  // dependency so a preview already standing when the build lands (and the
+  // offer arms) gets its picture taken without waiting for another rebuild.
+  const [loadCount, setLoadCount] = useState(0);
+  const offer = useBuildLogStore(s => s.offer);
+  useEffect(() => {
+    if (loadCount === 0 || bundling || buildError || runtimeError || emptyRender) return;
+    const t = setTimeout(() => void rememberPreviewSnapshot(), 1500);
+    return () => clearTimeout(t);
+  }, [loadCount, bundling, buildError, runtimeError, emptyRender, offer]);
+
   // The build report's optional snapshot asks the iframe to capture itself
   useEffect(() => {
     if (html === null) return;
@@ -212,6 +228,7 @@ export function FrameworkPreview({
           <iframe
             ref={iframeRef}
             src={src}
+            onLoad={() => setLoadCount(n => n + 1)}
             title="App preview"
             sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
             style={{ flex: 1, border: 0, background: '#fff' }}

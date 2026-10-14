@@ -10,7 +10,7 @@ import {
   sendBuildReport,
   type ReportFeedback,
 } from '@/report/build-report';
-import { capturePreviewScreenshot } from '@/preview/screenshot';
+import { capturePreviewScreenshot, usePreviewSnapshotStore } from '@/preview/screenshot';
 import { Button } from '@/components/ui/button';
 
 /**
@@ -105,9 +105,19 @@ export function BuildReportCard() {
   // The snapshot is captured on-device the moment the card appears, so the
   // checkbox and the payload preview show the REAL image — it never travels
   // unless the box stays ticked and the builder shares.
-  const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [liveScreenshot, setLiveScreenshot] = useState<string | null>(null);
   const [screenshotTries, setScreenshotTries] = useState(0);
   const [includeScreenshot, setIncludeScreenshot] = useState(true);
+  // The preview engines remember a snapshot whenever the app stands (the
+  // iframe is often unmounted while this card shows — other tab, phone
+  // layout). One from this build is as good as a live capture; an older
+  // one belongs to an earlier project and is ignored.
+  const remembered = usePreviewSnapshotStore(s => s.dataUrl);
+  const rememberedAt = usePreviewSnapshotStore(s => s.at);
+  const buildStartAt = events.find(e => e.type === 'build_start')?.at ?? 0;
+  const screenshot =
+    liveScreenshot ??
+    (remembered && rememberedAt !== null && rememberedAt >= buildStartAt ? remembered : null);
   const [phase, setPhase] = useState<'ask' | 'sending' | 'sent' | 'error'>('ask');
 
   const files = useMemo(
@@ -164,7 +174,7 @@ export function BuildReportCard() {
       const shot = await capturePreviewScreenshot();
       if (cancelled) return;
       setScreenshotTries(n => n + 1);
-      if (shot) setScreenshot(shot);
+      if (shot) setLiveScreenshot(shot);
     }, screenshotTries === 0 ? 0 : 3000);
     return () => {
       cancelled = true;
@@ -306,6 +316,12 @@ export function BuildReportCard() {
             "see exactly what we'd send" below
           </span>
         </label>
+      )}
+      {!screenshot && phase === 'ask' && (
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          No snapshot of the app yet. Open the preview and come back — a picture of
+          what you built gets added to the report, with a box to leave it out.
+        </p>
       )}
 
       <button

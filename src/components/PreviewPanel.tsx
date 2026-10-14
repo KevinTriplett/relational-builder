@@ -20,8 +20,10 @@ import { INSPECT_SOURCE } from '@/preview/inspect-source';
 import {
   captureFromIframe,
   registerPreviewScreenshotter,
+  rememberPreviewSnapshot,
   SCREENSHOT_SOURCE,
 } from '@/preview/screenshot';
+import { useBuildLogStore } from '@/report/build-log';
 import { resolveReactEntry } from '@/preview/react-entry';
 import { detectPreviewKind } from '@/preview/detect';
 import { extractHashRoutes } from '@/preview/routes';
@@ -446,6 +448,15 @@ function SandpackErrorBridge() {
     setHealth(errorText ? 'error' : 'ok');
     return () => setHealth('idle');
   }, [errorText, setHealth]);
+  // A standing, error-free app is worth remembering for the build report
+  // (see rememberPreviewSnapshot) — the card may never have this iframe
+  const status = sandpack.status;
+  const offer = useBuildLogStore(s => s.offer);
+  useEffect(() => {
+    if (errorText || status !== 'running') return;
+    const t = setTimeout(() => void rememberPreviewSnapshot(), 2500);
+    return () => clearTimeout(t);
+  }, [errorText, status, offer]);
   return <FixBanner error={errorText} />;
 }
 
