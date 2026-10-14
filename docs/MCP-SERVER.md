@@ -42,7 +42,7 @@ command). No account needed; the room key is the credential for the wall.
 | Action | What it does |
 |---|---|
 | `wall` `{event_code}` | One event's demo wall (via `event_showcase_for`), plus the presentation link |
-| `share` `{event_code, project_name, builder_name?, one_liner?, demo_url?, screenshot?, contact_label?, contact_value?, email?, via}` | Pins a project to the wall with the service role: no `owner_id`, no deck, `submitted_via` = `mcp` or `email`. A re-share with the same email and project name replaces the card. |
+| `share` `{event_code, project_name, builder_name?, one_liner?, demo_url?, screenshot?, contact_label?, contact_value?, email?, via}` | Pins a project to the wall with the service role: no `owner_id`, no deck, `submitted_via` = `mcp`, `email`, or `host` (the Event Admin page's form). A re-share with the same email and project name replaces the card. |
 | `civic_endpoints` `{city?}` | Active rows from `city_data_endpoints` through the anon-callable `public_city_data_endpoints()` RPC |
 | `seeds` `{query?, limit?}` / `seed` `{share_slug}` | Shared prompts (`prompts.is_shared`), with `?prompt=<slug>` links back into the Builder |
 | `POST ?inbound=resend` | The build day inbox (below) |
@@ -55,7 +55,8 @@ in the public `studio-library` bucket under `event-wall/`, like Share Live's.
 `supabase/migrations/20261014090000_event_wall_open_door.sql`:
 
 - `event_showcase.owner_id` and `deck_url` become nullable; `submitted_via`
-  (`builder` | `mcp` | `email`, default `builder`) and `submitter_email`
+  (`builder` | `mcp` | `email` | `host`, default `builder`; `host` added by
+  `20261014120000_event_wall_host_door.sql`) and `submitter_email`
   (service-role only, never granted to clients) are added
 - a partial unique index keeps one card per outside builder per project
   per event
@@ -64,9 +65,8 @@ in the public `studio-library` bucket under `event-wall/`, like Share Live's.
   the Slides link
 - `public_city_data_endpoints()` lets anyone read the active civic endpoints
 
-Until it runs, `share` and `civic_endpoints` fail (missing columns, missing
-RPC); everything else in the bridge works. The UI treats a missing
-`submitted_via` as the Builder's own door.
+Both migrations are applied to production (Oct 14, 2026). The UI treats a
+missing `submitted_via` as the Builder's own door.
 
 ## The build day inbox (email → wall)
 
@@ -114,7 +114,7 @@ Any address at the receiving domain works (`wall@`, `buildday@`,
 
 ## What this adds up to at a build day
 
-Three doors onto one wall, all presenting from `/show/CODE` in the order
+Four doors onto one wall, all presenting from `/show/CODE` in the order
 things were shared:
 
 1. **Relational Builder in the browser:** Share Live → pin (the deck plus the
@@ -122,8 +122,13 @@ things were shared:
 2. **Your own AI tool with the MCP server:** the `build-day` prompt sets the
    stance, shows the room, pulls live civic data, and ends with
    `share-to-build-day-wall` (the card, no deck).
-3. **Email:** the code in the subject, a link, a screenshot (the card, no
-   deck).
+3. **The host, from the Event Admin page:** "Add a build made with other
+   tools" — the builder tells the host (in person, or by emailing them),
+   the host types the card in. No setup, a person in the loop, works for
+   every event host. This is the default for builders with their own tools;
+   the doors below are for rooms that want it unattended.
+4. **Email, unattended:** the code in the subject, a link, a screenshot (the
+   card, no deck). Needs the one-time Resend setup above.
 
 Cards without a deck present as a full-screen card (picture, name, line,
 builder) or, when there is a live link, as the live app.

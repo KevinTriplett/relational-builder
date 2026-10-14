@@ -10,20 +10,22 @@ import {
 } from '@/cloud/event-admin';
 import { eventInviteLink } from '@/cloud/event-codes';
 import { eventShowLink, fetchEventShow } from '@/cloud/event-join';
-import { removeFromShowcase, type ShowcaseEntry } from '@/cloud/event-showcase';
+import { removeFromShowcase, addOutsideBuild, isOutsideBuild, type ShowcaseEntry } from '@/cloud/event-showcase';
+import { shrinkScreenshot } from '@/project/share-live';
 import { openRoomKey } from '@/project/room-key';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import {
-  PartyPopper, Loader2, Copy, Check, Printer, Presentation, Users, X, Mail, ExternalLink, RefreshCw,
+  PartyPopper, Loader2, Copy, Check, Printer, Presentation, Users, X, Mail, ExternalLink, RefreshCw, Plus, ImagePlus,
 } from 'lucide-react';
 
 /**
  * The Event Admin page — running a community build day without a steward.
  * A steward names admins by email on the Codes tab; this is what they get:
  * the room key and the presentation link, who has joined (add by email,
- * remove), the shelf (take any deck down), and the key's on/off switch.
+ * remove), the shelf (take any deck down, add a build someone made with
+ * their own tools), and the key's on/off switch.
  * Minting, dating and archiving codes stay on the Steward page. Every
  * action is a security-definer function that checks is_event_admin() —
  * this page is its hands, not its gate.
@@ -318,11 +320,12 @@ function EventConsole({
         <div className="flex items-center gap-2">
           <Presentation className="size-4 text-muted-foreground" />
           <h2 className="text-sm font-semibold">On the shelf</h2>
-          <span className="text-xs text-muted-foreground">{decks ? `${decks.length} ${decks.length === 1 ? 'deck' : 'decks'}` : ''}</span>
+          <span className="text-xs text-muted-foreground">{decks ? `${decks.length} ${decks.length === 1 ? 'build' : 'builds'}` : ''}</span>
         </div>
         {decks === null ? null : decks.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No decks yet. They appear as builders use Share Live and pin to the event.
+            Nothing yet. Builds appear as people use Share Live and pin to the
+            event, share from their own AI tools, or you add them below.
           </p>
         ) : (
           <div className="space-y-1.5">
@@ -330,6 +333,7 @@ function EventConsole({
               <div key={d.id} className="rounded-lg border px-3 py-2 flex items-center gap-3 flex-wrap text-sm">
                 <span className="font-medium">{d.project_name}</span>
                 {d.builder_name && <span className="text-xs text-muted-foreground">by {d.builder_name}</span>}
+                {isOutsideBuild(d) && <Badge variant="outline" className="text-[10px]">own tools</Badge>}
                 <span className="text-xs text-muted-foreground/70">{fmtDay(d.created_at)}</span>
                 {d.deck_url ? (
                   <a href={d.deck_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
@@ -355,6 +359,181 @@ function EventConsole({
           </div>
         )}
       </section>
+
+      <AddOutsideBuild event={event} onAdded={load} onError={onError} />
     </div>
+  );
+}
+
+/**
+ * The host's door onto the wall. A builder who made something with their
+ * own AI tool (or on paper) tells the host; the host types the card in.
+ * Twenty seconds, a person in the loop, no setup. The card lands through
+ * commons-bridge with no deck and "own tools" on it, and presents as the
+ * live app when there is a link or as the card itself when there isn't.
+ */
+function AddOutsideBuild({
+  event,
+  onAdded,
+  onError,
+}: {
+  event: AdminEvent;
+  onAdded: () => Promise<void>;
+  onError: (msg: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [projectName, setProjectName] = useState('');
+  const [builderName, setBuilderName] = useState('');
+  const [oneLiner, setOneLiner] = useState('');
+  const [demoUrl, setDemoUrl] = useState('');
+  const [email, setEmail] = useState('');
+  const [contactLabel, setContactLabel] = useState('');
+  const [contactValue, setContactValue] = useState('');
+  const [shot, setShot] = useState<string | null>(null);
+  const [shotName, setShotName] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+
+  function reset() {
+    setProjectName(''); setBuilderName(''); setOneLiner(''); setDemoUrl('');
+    setEmail(''); setContactLabel(''); setContactValue(''); setShot(null); setShotName(null);
+  }
+
+  async function pickShot(file: File | undefined) {
+    if (!file) return;
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(new Error('Could not read that image'));
+      r.readAsDataURL(file);
+    });
+    const small = await shrinkScreenshot(dataUrl);
+    if (!small) {
+      onError('That image could not be read — try a PNG or JPEG');
+      return;
+    }
+    setShot(small);
+    setShotName(file.name);
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    const name = projectName.trim();
+    if (!name) return;
+    setSaving(true);
+    onError(null);
+    setDone(null);
+    try {
+      const label = contactLabel.trim();
+      const value = contactValue.trim();
+      await addOutsideBuild({
+        eventCode: event.code,
+        projectName: name,
+        builderName: builderName.trim() || null,
+        oneLiner: oneLiner.trim() || null,
+        demoUrl: demoUrl.trim() || null,
+        screenshotDataUrl: shot,
+        contact: value ? { label: label || 'Contact', value } : null,
+        email: email.trim() || null,
+      });
+      setDone(`${name} is on the wall.`);
+      reset();
+      await onAdded();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Could not add that build');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="rounded-xl border p-4 space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Plus className="size-4 text-muted-foreground" />
+        <h2 className="text-sm font-semibold">Add a build made with other tools</h2>
+        {!open && (
+          <Button size="sm" variant="outline" className="ml-auto" onClick={() => setOpen(true)}>
+            Add to the wall
+          </Button>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Someone built in Claude Code, Cursor, Lovable, or on paper? Type their
+        card in and it joins the wall and the presentation next to everyone
+        else's, marked "own tools". Adding the same project again (with the
+        same email) replaces the card.
+      </p>
+      {done && !open && <p className="text-xs text-primary">{done}</p>}
+      {open && (
+        <form onSubmit={submit} className="grid gap-2 sm:grid-cols-2">
+          <Input
+            value={projectName}
+            onChange={e => setProjectName(e.target.value)}
+            placeholder="Project name"
+            required
+            maxLength={120}
+          />
+          <Input
+            value={builderName}
+            onChange={e => setBuilderName(e.target.value)}
+            placeholder="Builder's name (as it should appear)"
+            maxLength={120}
+          />
+          <Input
+            className="sm:col-span-2"
+            value={oneLiner}
+            onChange={e => setOneLiner(e.target.value)}
+            placeholder="One line: what it does and who it's for"
+            maxLength={200}
+          />
+          <Input
+            type="url"
+            value={demoUrl}
+            onChange={e => setDemoUrl(e.target.value)}
+            placeholder="Link to the live tool or repo (optional)"
+            maxLength={500}
+          />
+          <Input
+            type="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            placeholder="Builder's email (not shown; lets you re-add)"
+            maxLength={200}
+          />
+          <Input
+            value={contactLabel}
+            onChange={e => setContactLabel(e.target.value)}
+            placeholder="Contact label, e.g. Email, Phone (optional)"
+            maxLength={40}
+          />
+          <Input
+            value={contactValue}
+            onChange={e => setContactValue(e.target.value)}
+            placeholder="Contact value, shown on the wall (optional)"
+            maxLength={200}
+          />
+          <label className="sm:col-span-2 inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+            <ImagePlus className="size-3.5" />
+            <span>{shotName ? `Screenshot: ${shotName}` : 'Add a screenshot (optional)'}</span>
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="sr-only"
+              onChange={e => { void pickShot(e.target.files?.[0]); e.target.value = ''; }}
+            />
+          </label>
+          <div className="sm:col-span-2 flex items-center gap-2">
+            <Button type="submit" size="sm" disabled={saving || !projectName.trim()}>
+              {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
+              Add to the wall
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={() => { setOpen(false); reset(); }} disabled={saving}>
+              Cancel
+            </Button>
+            {done && <span className="text-xs text-primary">{done}</span>}
+          </div>
+        </form>
+      )}
+    </section>
   );
 }

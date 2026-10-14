@@ -29,8 +29,9 @@ export interface ShowcaseEntry {
   contact_label: string | null;
   contact_value: string | null;
   /** Which door the entry came through: Share Live in the Builder, an AI
-   *  tool through the RT MCP server, or the build day inbox */
-  submitted_via: 'builder' | 'mcp' | 'email';
+   *  tool through the RT MCP server, the build day inbox, or the host
+   *  typing it in on the Event Admin page */
+  submitted_via: 'builder' | 'mcp' | 'email' | 'host';
   created_at: string;
 }
 
@@ -128,4 +129,46 @@ export async function removeFromShowcase(id: string): Promise<void> {
   if (!builderClient) throw new Error('Cloud backend not configured');
   const { error } = await builderClient.from('event_showcase').delete().eq('id', id);
   if (error) throw new Error(error.message);
+}
+
+/**
+ * The host's door: a build made outside the Builder (someone's own AI
+ * tool, a notebook, a paper prototype) typed in by an event admin from the
+ * Event Admin page. Goes through the commons-bridge function like the MCP
+ * server's share does — the room key is the credential, the card has no
+ * deck, and the wall says "built with their own tools".
+ */
+export async function addOutsideBuild(input: {
+  eventCode: string;
+  projectName: string;
+  builderName: string | null;
+  oneLiner: string | null;
+  demoUrl: string | null;
+  /** Already shrunk (shrinkScreenshot) — the bridge caps uploads at 4MB */
+  screenshotDataUrl: string | null;
+  contact: { label: string; value: string } | null;
+  /** The builder's email, so re-adding the same project replaces the card */
+  email: string | null;
+}): Promise<void> {
+  const base = import.meta.env.VITE_BUILDER_SUPABASE_URL ?? '';
+  if (!base) throw new Error('Cloud backend not configured');
+  const res = await fetch(`${base}/functions/v1/commons-bridge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'share',
+      via: 'host',
+      event_code: input.eventCode,
+      project_name: input.projectName,
+      builder_name: input.builderName,
+      one_liner: input.oneLiner,
+      demo_url: input.demoUrl,
+      screenshot: input.screenshotDataUrl,
+      contact_label: input.contact?.label ?? null,
+      contact_value: input.contact?.value ?? null,
+      email: input.email,
+    }),
+  });
+  const json = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(json.error ?? 'Could not add that build to the wall');
 }

@@ -17,7 +17,7 @@
  *     → { event: { code, name }, wall_url, entries: [...] }
  *   { action: "share", event_code, project_name, builder_name?, one_liner?,
  *     demo_url?, screenshot? (image data URL), contact_label?,
- *     contact_value?, email?, via?: "mcp" | "email" }
+ *     contact_value?, email?, via?: "mcp" | "email" | "host" }
  *     → { ok, wall_url, entry: { id } }   (replaces the same builder's
  *       earlier card for the same project when an email was given)
  *   { action: "civic_endpoints", city? }
@@ -160,7 +160,7 @@ interface ShareInput {
   contactLabel: string | null;
   contactValue: string | null;
   email: string | null;
-  via: 'mcp' | 'email';
+  via: 'mcp' | 'email' | 'host';
 }
 
 async function hostScreenshot(shot: { bytes: Uint8Array; mime: string }): Promise<string | null> {
@@ -537,7 +537,8 @@ Deno.serve(async (req: Request) => {
       if (!projectName) return json({ error: 'project_name is required' }, 400);
       const screenshot = decodeDataUrl(body.screenshot);
       if (screenshot === 'bad') return json({ error: 'screenshot must be a png/jpeg/webp/gif data URL under 4MB' }, 400);
-      const via = body.via === 'email' ? 'email' : 'mcp';
+      // 'host' is the Event Admin page typing a card in for a builder
+      const via = body.via === 'email' ? 'email' : body.via === 'host' ? 'host' : 'mcp';
       const entry = await shareToWall(ev, {
         eventCode: ev.code,
         projectName,
