@@ -469,9 +469,7 @@ export function ChatPanel() {
     // syncs to collaborators with it) but no model is called — ever. Before
     // the provider guard on purpose: a note needs no provider.
     if (currentMode === 'message') {
-      const { profile, user } = useAuthStore.getState();
-      const author = profile?.display_name?.trim() || user?.email || undefined;
-      useChatStore.getState().addCollabNote(content, author, attachments);
+      useChatStore.getState().addCollabNote(content, attachments);
       return;
     }
 
