@@ -1,0 +1,34 @@
+6b68ea634f37a70e3a5ef3146d74a02072eda094
+
+# Phase 0 record (2026-10-26). First line is the base commit; everything below is notes.
+# Base: fork main (KevinTriplett/relational-builder) = origin/main at branch time.
+
+## Pinned dev dependencies (exact)
+vitest                      5.0.5
+@openvtc/trust-tasks        0.26.29   (npm latest is 0.27.8; spec NF-3 asks for 0.26.x)
+@openvtc/trust-tasks-proof  0.1.3     (declares @openvtc/trust-tasks ^0.19.0 -> nested 0.19.22; type-only import; see OPENVTC-FEEDBACK.md OVTC-1)
+@noble/curves               2.4.0
+Edge function specifiers:   npm:@openvtc/trust-tasks@0.26.29  npm:@openvtc/trust-tasks-proof@0.1.3  npm:@noble/curves@2.4.0
+
+## Upstream sources in .spike-deps/ (git-ignored)
+dtgwg-trust-tasks-tf  f42a6dcb839d23b0b0f44ab3dc9abd192a70d410  (tag trust-tasks-ts-v0.26.29, 2026-10-21)
+                      upstream HEAD when cloned: 10904af15b4d109dff6f35cb0745d74b9da06547 (2026-10-27, trust-tasks-ts 0.27.8)
+                      trust-tasks-ts/src/_runtime at this tag == node_modules/@openvtc/trust-tasks/src/_runtime (verified byte-identical)
+                      trust-tasks-ts-proof source at this tag is 0.1.2; installed is 0.1.3 (dist only) -> read node_modules for proof
+dtgwg-vti-spec        a85dc8402dfc87790a47c8ba6c5c9a31913c7bd6  (2026-10-22)
+
+## Toolchain
+node 24.15.0, deno 2.9.7, typescript ~6.0.2 (repo)
+
+## Phase 0 checks
+3a Deno smoke import of both pinned packages: ok (~4.5 s cold), all runtime exports the spec names present
+5  npx vitest run --passWithNoTests --exclude '.spike-deps/**' --exclude '**/node_modules/**' -> exit 0, no tests
+   (plain `npx vitest run` exits 1 with no test files; vitest also discovers upstream tests in .spike-deps/)
+lint baseline: `npx eslint .` = 21 problems (20 errors, 1 warning), pre-existing on main
+   (.spike-deps added to eslint globalIgnores; without it lint reports 246)
+build: `npm run build` passes (chunk-size warnings only); it rewrites public/knowledge/index.json timestamp - revert, never commit
+
+## Carry-forward notes for later phases
+- T: vitest.config.ts must exclude .spike-deps/** (and node_modules).
+- D: HTTPS binding 0.3 (draft) now exists alongside 0.2 (draft); spec targets 0.2 - note, don't switch.
+- D: confirm 0.19 ProofVerifier type (from proof pkg) is assignable to 0.26 consumeInbound's ProofVerifier under tsc.

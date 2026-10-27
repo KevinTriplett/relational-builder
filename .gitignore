@@ -37,3 +37,6 @@ bench/results/**/review/index.html
 bench/results/selftest/
 troubleshooting/
 internal reference docs/
+
+# OpenVTC sign-in spike: upstream spec/source clones (read-only reference)
+.spike-deps/
