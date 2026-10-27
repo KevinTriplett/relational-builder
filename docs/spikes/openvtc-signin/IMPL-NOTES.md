@@ -17,6 +17,37 @@ no library source beyond `GETTING-STARTED.md` was needed.)
 
 ## Per-file
 
+### 2. `replay.test.ts` → `supabase/functions/app-trust-tasks/replay.ts` (S-22, S-24)
+
+- 16/16 green. `npx tsc --noEmit -p tsconfig.functions.json` clean (zero diagnostics).
+- `replay.ts` contains no `Deno.` reference (only "No Deno globals", a hyphen/space,
+  which the finish-line grep `grep -rn "Deno\."` does not match).
+- One `// SPIKE:` comment (NF-5/C-34 ≥1): the app-scoped guard rationale.
+- Implementation notes:
+  - `PostgresReplayGuard` keeps the stub's signatures (`claim`, `recordResponse`,
+    `release`, `DEFAULT_RETENTION_PAD_MS = DEFAULT_SKEW_MS = 60000`, `ReplayGuardDeps`).
+  - `claim`: `retainUntil === undefined` throws before any write (fail-closed; §7.2
+    bounds the record to the acceptance window — no window, no claim). Otherwise a
+    2-attempt loop: P5 insert (`until_at = retainUntil + retentionPadMs`, body
+    `{doc_id, app_id, digest, response:null, until_at}`, `return=minimal`); 201 →
+    fire-and-forget P8 sweep then `{kind:'fresh'}`; 409 → `resolveConflict`; any
+    other status throws.
+  - `resolveConflict` (on a 409): P6 GET `?doc_id=eq.` (select `app_id,digest,response,
+    until_at`, prefer absent). Precedence: any row owned by a *different* app →
+    `conflict` (S-24, never touched); else no row for us → `retry` (raced delete);
+    else our own row: expired (`until_at <= now`) → P7 delete `?doc_id=eq.&until_at=lte.`
+    then `retry`; unexpired + different digest → `conflict`; same digest + response
+    null → `duplicate{inFlight:true}`; same digest + response set →
+    `duplicate{inFlight:false, priorResponse}`.
+  - `recordResponse`: P9 PATCH `?doc_id=eq.&app_id=eq.` body `{response}`, `return=minimal`;
+    throws on non-2xx. `release`: P10 DELETE
+    `?doc_id=eq.&app_id=eq.&digest=eq.&response=is.null` (best-effort; scoped to this
+    app's in-flight record only, so a completed record is never released).
+  - P8 sweep deletes `until_at < now` (strict); fire-and-forget (`.catch(()=>{})`),
+    a failed sweep must not fail the claim. P7 deletes `until_at <= now` (inclusive).
+  - `// SPIKE:` is mandatory for `replay.ts` (NF-5 minimum ≥1); the others
+    (`challenges`/`status`/`members`) are not.
+
 ### 1. `challenges.test.ts` → `supabase/functions/app-trust-tasks/challenges.ts` (S-20, S-21, S-23)
 
 - 18/18 green. `npx tsc --noEmit -p tsconfig.functions.json` clean.
