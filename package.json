@@ -9,6 +9,7 @@
     "prebuild": "node scripts/export-builder-knowledge.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "typecheck:functions": "tsc --noEmit -p tsconfig.functions.json",
     "preview": "vite preview",
     "bench": "NODE_USE_ENV_PROXY=1 node bench/bootstrap.mjs"
   },

@@ -47,7 +47,7 @@ Phase 5  Orchestrator + human: manual wallet trial, FINDINGS.md
 3. Clone `https://github.com/trustoverip/dtgwg-trust-tasks-tf` (shallow) into `.spike-deps/dtgwg-trust-tasks-tf` (gitignored) so agents can read `GETTING-STARTED.md`, `SPEC.md`, the two task specs, the HTTPS binding, and `trust-tasks-ts/src/_runtime/*`. Also clone `https://github.com/trustoverip/dtgwg-vti-spec` for `spec/07-clients.md`.
    3a. **Deno smoke test before anything else:** `deno eval 'import "npm:@openvtc/trust-tasks@<ver>"; import "npm:@openvtc/trust-tasks-proof@<ver>"; console.log("ok")'`. If this fails and no `esm.sh`/vendoring fix works within an hour, stop and write FINDINGS (see §5).
 4. Create the empty `docs/spikes/openvtc-signin/` tree and copy `SPIKE-SPEC.md` and this file into it.
-5. Verify `npx vitest run` executes with zero tests and exits 0.
+5. Verify `npx vitest run --passWithNoTests` executes with zero tests and exits 0.
 
 ### Phase 1 — Design (agent D)
 

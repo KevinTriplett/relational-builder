@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": [],
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "npm:@openvtc/trust-tasks@0.26.29":       ["./node_modules/@openvtc/trust-tasks"],
+      "npm:@openvtc/trust-tasks@0.26.29/*":     ["./node_modules/@openvtc/trust-tasks/dist/*"],
+      "npm:@openvtc/trust-tasks-proof@0.1.3":   ["./node_modules/@openvtc/trust-tasks-proof/dist/index.d.ts"],
+      "npm:@noble/curves@2.4.0/*":              ["./node_modules/@noble/curves/*"]
+    }
+  },
+  "include": [
+    "supabase/functions/app-trust-tasks/**/*.ts",
+    "src/kit/files/lib/trust-signin.ts"
+  ],
+  "exclude": ["supabase/functions/app-trust-tasks/index.ts"]
+}
