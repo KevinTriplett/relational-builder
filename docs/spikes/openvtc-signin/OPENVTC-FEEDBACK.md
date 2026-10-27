@@ -159,3 +159,60 @@ The package ships payload schemas as values, and `consumeInbound` accepts a `val
 ### OVTC-23 · `positive` · HTTPS binding 0.3 is a small, additive change
 
 Binding 0.3 only adds SSE streaming on top of 0.2, so a consumer built on 0.2 does not need to change to adopt it. This is worth saying in the binding's own changelog or abstract, so readers don't have to diff the two to find out.
+
+---
+
+## Phase 2 — writing tests from the specs alone (2026-10-26)
+
+A second agent wrote the test suite using only the task specs, the binding and the packages' public API, without reading the runtime source. It independently reported OVTC-7, 10, 11, 12, 13, 14, 15, 16, 18, 19, 20 and 22. Two separate readers converging on the same items is a reasonable sign they are real. The new items follow.
+
+### OVTC-24 · `docs` · The package README contradicts the shipped schemas
+
+`@openvtc/trust-tasks` README, section "Validating payloads at runtime" (around lines 200–207), tells consumers to fetch `payload.schema.json` from trusttasks.org and wire up §7.2 items 1–2 themselves. But every task module ships `SPEC.payloadSchema` / `PAYLOAD_SCHEMA` with `$ref`s inlined, `consumeInbound` takes a `payloadPolicy`, and the header of `dist/_runtime/consume.d.ts` says item 2 is no longer the caller's job. **Fix:** point that section at `SPEC.payloadSchema` and `payloadPolicy: { kind: "validate" }`. Also list the JSON Schema keywords the shipped schemas use (about 20 in the auth family), so consumers know how small a validator they can get away with (see OVTC-21).
+
+### OVTC-25 · `docs` · No machine-readable valid examples
+
+`specs/auth/challenge/0.1/` and `specs/auth/authenticate/0.3/` ship `payload.invalid-examples.json`, but there is no valid-examples counterpart and no response examples. Valid documents exist only as fenced JSON in `spec.md`, which testers must scrape. **Fix:** add `payload.valid-examples.json` and `response.valid-examples.json`, and check them in CI against the schemas and `consumeInbound`.
+
+### OVTC-26 · `bug` · Challenge length floor is below the spec's own entropy rule (verified)
+
+The `auth/challenge/0.1` response schema has `challenge.minLength: 16` (`specs/auth/challenge/0.1/payload.schema.json:36`). The spec requires at least 128 bits of entropy (`spec.md:76`), which is at least 22 base64url characters. **Fix:** `minLength: 22` plus a base64url `pattern`, or say why the schema floor is deliberately looser.
+
+### OVTC-27 · `bug` · `auth/challenge/0.1` subject binding contradicts `auth/authenticate/0.3`'s acting-party rule (verified)
+
+`specs/auth/challenge/0.1/spec.md:78`: "A successful subsequent authenticate MUST be rejected if its `issuer` does not equal this `subject`." `authenticate/0.3/spec.md:130` compares the challenge subject with the *acting party* (`principal ?? issuer`). A correct proxied 0.3 login (delegate is the `issuer`, principal is the subject) therefore violates the challenge spec's MUST. **Fix:** amend challenge item 3 to say "acting party (`principal` when present, otherwise `issuer`)".
+
+### OVTC-28 · `docs` · `auth/authenticate/0.3` is not self-contained, and its check order is not normative
+
+- `authenticate/0.3/spec.md:136` says the ordinary case proceeds "exactly as auth/authenticate/0.2 items 7–12", so an implementer pinned to 0.3 must read 0.2.
+- `:127-131` lists lookup → compare → expiry → subject → consume, but doesn't say whether that order is normative. It also doesn't say whether a failed compare burns the challenge, or whether expiry or mismatch is reported first.
+
+These choices change observable error codes. **Fix:** inline the ordinary-case items, and state the order and the consume-on-failure rule normatively.
+
+### OVTC-29 · `docs` · `challengeExpired` is marked `retryable: true`
+
+`authenticate/0.3/spec.md:55-57`. Under SPEC §8.4 a retry is a bit-identical resend, and resending a document whose challenge has expired can never succeed: the client needs a new challenge and a new signed document. **Fix:** mark it `retryable: false`, or define that `retryable` on this code means "restart the ceremony".
+
+### OVTC-30 · `docs` · Example reuses the challenge `sessionId` as `session.id`
+
+`authenticate/0.3/spec.md:292`: the proxied response example sets `session.id` to the challenge's `sessionId`. That suggests reusing the correlation handle as the session identifier, which an implementer may copy. **Fix:** use a distinct id in the example.
+
+### OVTC-31 · `docs` · Session schema doesn't enforce the prose MUSTs on `amr` / `acr`
+
+`specs/auth/_shared/0.3/session.schema.json:13` does not require `amr` or `acr`. `authenticate/0.3/spec.md:138, 274` say `session.amr` MUST include `"did"`, and give `acr` a default of `"aal1"`. **Fix:** require `amr` with `contains: { const: "did" }` for this task's response, or soften the prose.
+
+### OVTC-32 · `docs` · `authenticate/0.3` reuses the 0.1 tokens schema across versions (minor, verified)
+
+`specs/auth/authenticate/0.3/payload.schema.json:84` refers to `../../_shared/0.1/tokens.schema.json#/$defs/TokenBundle`. That file exists, so this is not a broken link. But `_shared/0.3/` contains only `session.schema.json`, so a reader collecting "the 0.3 shared set" misses TokenBundle. **Fix:** a one-line note in `_shared/0.3/` (or the task spec) that tokens are deliberately reused from 0.1.
+
+### OVTC-33 · `docs` · Binding 0.2 status-table gaps beyond OVTC-19
+
+In `bindings/https/0.2/spec.md`:
+- **`suppressed` outcome.** No row covers it (an `identityMismatch` with no transport-authenticated sender), at `:73-91`. The Rust reference server answers it with a generic `malformedRequest` and 400.
+- **Extended codes and rate limits.** No row covers extended `slug:local` codes (every `auth/authenticate:*`), and there is no 429 row with `Retry-After`, although `auth/challenge:rateLimited` exists.
+- **`errored` lifecycle row.** Its 422 bucket (`:113`) omits `expired` and `cancelled`, which the status table includes (`:83, :86`).
+- **When to send 401.** The 401 row ("Missing / invalid `Authorization`", `:80`) sits uneasily with `:47`, where no Authorization header simply means no transport-authenticated sender.
+
+### OVTC-34 · `friction` · No envelope validation in the runtime
+
+`consumeInbound` does no framework-schema check (SPEC §7.2 item 1). A numeric `id`, `payload: null`, or a string `proof` all reach the pipeline. Consumers must write this check themselves; ours does. **Fix:** export a `validateEnvelope` (or the framework schema as a value, as is already done for payloads), and run it at the top of `consumeInbound`.

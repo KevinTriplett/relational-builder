@@ -249,6 +249,19 @@ export function communityCloudConnected(vars: EnvVar[]): boolean {
   return COMMUNITY_CLOUD_KEYS.every(k => keys.has(k));
 }
 
+// ── Trust Task sign-in (spike S-70) — SPIKE STUB, Phase 1/G2 design agent ──
+
+/** Env keys that switch on "Sign in with this device" guidance (S-70). */
+export const TRUST_SIGNIN_KEYS = ['TRUST_TASKS_URL', 'TRUST_TASKS_VID'];
+
+/** True iff Community Cloud is connected and every TRUST_SIGNIN_KEYS value is non-blank (S-70). */
+export function trustSigninConnected(_vars: EnvVar[]): boolean {
+  throw new Error('not implemented');
+}
+
+/** Prompt guidance for the trust-signin kit helper (S-70); content written by the implementer. */
+export const TRUST_SIGNIN_GUIDANCE: string = '';
+
 export const COMMUNITY_CLOUD_GUIDANCE = [
   '- **Community Cloud is connected** — zero-setup shared storage hosted by the Relational Tech Project. The app stores JSON documents in named collections via POST requests (get `env` per the Environment Variables rules — `import { env } from "./env.js"` in plain HTML, `from "./env"` in React):',
   '  ```javascript',

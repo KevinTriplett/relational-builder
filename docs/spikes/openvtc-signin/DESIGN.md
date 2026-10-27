@@ -131,7 +131,7 @@ export interface CoreResponse { status: number; body?: unknown; }
 export type TypeClass = "challenge" | "authenticate" | "unsupportedVersion" | "unsupportedType";
 /** S-40 → S-41 → S-42 → S-43/S-44 → S-50. Never throws. */
 export async function handleTrustTask(deps: CoreDeps, req: CoreRequest): Promise<CoreResponse>;
-/** `did:web:<host>` of SUPABASE_URL (S-30). */
+/** `did:web:<hostname>` (+ `%3A<port>` if an explicit non-default port) of SUPABASE_URL (S-30, C-25). */
 export function localVidFromSupabaseUrl(supabaseUrl: string): string;
 /** S-41 dispatch class. */
 export function classifyType(type: string): TypeClass;
@@ -214,6 +214,15 @@ export function responseHeaders(hasBody: boolean): Record<string, string>;
 export function plainError(status: number, error: string): HttpResult;
 ```
 
+### `src/integrations/catalog.ts` (additions, C-26)
+```ts
+export const TRUST_SIGNIN_KEYS = ['TRUST_TASKS_URL', 'TRUST_TASKS_VID'];
+/** communityCloudConnected(vars) && every TRUST_SIGNIN_KEYS value non-blank (S-70). */
+export function trustSigninConnected(vars: EnvVar[]): boolean;
+/** Guidance text (S-70); stub is ''. */
+export const TRUST_SIGNIN_GUIDANCE: string;
+```
+
 ### `index.ts`
 `Deno.serve` glue only (S-51). It exports nothing, and it is the only file that may touch `Deno.*`.
 
@@ -247,7 +256,7 @@ export function shortDid(did: string): string;
 
 ## 3. Fake PostgREST contract
 
-`restUrl(p) = ${SUPABASE_URL}/rest/v1${p}`. Every request carries `svcHeaders()` = `{apikey, Authorization: "Bearer <svc>", "Content-Type": "application/json"}`, plus `Prefer` where listed. Filter values are `encodeURIComponent`-encoded and timestamps are `Date#toISOString()`. The fake must parse the query string (parameter order is not significant), compare timestamps as instants, and throw on any path, method, operator, `select` column or `Prefer` value not listed. Unique violations return `409 {"code":"23505","message":…}`. The fake must also support fault injection: `fetch` rejects, or answers 503.
+`restUrl(p) = ${SUPABASE_URL}/rest/v1${p}`. Every request carries `svcHeaders()` = `{apikey, Authorization: "Bearer <svc>", "Content-Type": "application/json"}`, plus `Prefer` where listed. Filter values are `encodeURIComponent`-encoded and timestamps are `Date#toISOString()`. The fake must parse the query string (parameter order is not significant), compare timestamps as instants, and throw on any path, method, operator or `Prefer` value not listed. The `select=` column set must **equal** the listed set, order-insensitive (C-35). Every filter value except `select` is `encodeURIComponent`-encoded exactly once. The fake decodes as PostgREST does: `+` → space, then percent-decoding (C-36). Unique violations return `409 {"code":"23505","message":…}`. The fake must also support fault injection: `fetch` rejects, or answers 503.
 
 | # | Method + path ? query | Prefer | Body | Success response | Other modelled responses |
 |---|---|---|---|---|---|

@@ -1,0 +1,32 @@
+{
+  // Type-checks the spike tests: `npx tsc --noEmit -p tests/tsconfig.json`.
+  // Mirrors tsconfig.functions.json (strict, bundler resolution, npm: paths)
+  // and adds node + vite/client types (tests use node:fs and the kit's ?raw imports).
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node", "vite/client"],
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "jsx": "react-jsx",
+    "baseUrl": "..",
+    "paths": {
+      "@/*": ["./src/*"],
+      "npm:@openvtc/trust-tasks@0.26.29": ["./node_modules/@openvtc/trust-tasks"],
+      "npm:@openvtc/trust-tasks@0.26.29/*": ["./node_modules/@openvtc/trust-tasks/dist/*"],
+      "npm:@openvtc/trust-tasks-proof@0.1.3": ["./node_modules/@openvtc/trust-tasks-proof/dist/index.d.ts"],
+      "npm:@noble/curves@2.4.0/*": ["./node_modules/@noble/curves/*"]
+    }
+  },
+  "include": ["./**/*.ts", "../vitest.config.ts"]
+}

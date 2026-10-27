@@ -196,7 +196,7 @@ export async function handleTrustTask(deps: CoreDeps, req: CoreRequest): Promise
 
 `localVid` comes from env `TRUST_TASKS_LOCAL_VID` and defaults to `did:web:<SUPABASE project host>` when unset. It is used only as the transport-authenticated *recipient* for the §4.8.1 cross-check (`wrongRecipient` when the document's `recipient` is present and differs) and as `issuer` of response documents. **Nothing resolves it and nothing signs with it in Increment 1**; code comment `// SPIKE: unsigned responses; local_vid is a label` is mandatory.
 
-*(Amended, C-5.)* The default is computed by `localVidFromSupabaseUrl(SUPABASE_URL)` = `did:web:` + the URL's host (no scheme, path or port). **Every document the function emits** has `issuer === localVid`: success responses, handler refusals, runtime rejections, and errors built without a parsed request. The runtime builds error documents with `issuer: request.recipient`, which under `wrongRecipient` is the VID the consumer has just said it is not, so `core.ts` re-stamps `issuer` (`stampIssuer`).
+*(Amended, C-5.)* The default is computed by `localVidFromSupabaseUrl(SUPABASE_URL)` = `did:web:` + the URL's `hostname`, followed by `%3A<port>` only when the URL carries an explicit non-default port (did:web method rule: a port is percent-encoded); no scheme, no path (C-25). Examples: `https://abcd.supabase.co/functions/v1` → `did:web:abcd.supabase.co`; `http://localhost:54321` → `did:web:localhost%3A54321`. **Every document the function emits** has `issuer === localVid`: success responses, handler refusals, runtime rejections, and errors built without a parsed request. The runtime builds error documents with `issuer: request.recipient`, which under `wrongRecipient` is the VID the consumer has just said it is not, so `core.ts` re-stamps `issuer` (`stampIssuer`).
 
 What the runtime does with `recipient`:
 - Present and different from `localVid` → `wrongRecipient` (422). The runtime does not return `identityMismatch` here, although HTTPS binding 0.2 §3 says it should. Record this in FINDINGS.
@@ -218,7 +218,7 @@ Every one of these bodies is plain JSON, never a trust-task-error. Where `trust_
 
 ### S-41 Parse and dispatch
 
-`rawBody` must be a JSON object with string `type`; otherwise `400` with a `trust-task-error` whose code is `malformedRequest` (use `rejectWith` from the runtime). `type` not in the registered set → `422` with `unsupportedType`. The two registered URIs are exact-match strings; `…/auth/authenticate/0.2` is **not** registered in Increment 1 (the plugin's current version) — record this in FINDINGS as the compatibility question it is, and make the registered set a single constant `REGISTERED_TYPES` so Increment 2 can add 0.2.
+`rawBody` must be a JSON object with string `type`; otherwise `400` with a `trust-task-error` whose code is `malformedRequest` (*C-32: every `malformedRequest` this consumer emits has `retryable: false`, SPEC §8.3 default*) (use `rejectWith` from the runtime). `type` not in the registered set → `422` with `unsupportedType`. The two registered URIs are exact-match strings; `…/auth/authenticate/0.2` is **not** registered in Increment 1 (the plugin's current version) — record this in FINDINGS as the compatibility question it is, and make the registered set a single constant `REGISTERED_TYPES` so Increment 2 can add 0.2.
 
 *(Amended, C-7.)*
 - **Unparseable body.** `index.ts` passes `rawBody: undefined` for a body that is not valid JSON. That gives 400 `malformedRequest`, the same as a non-object.
@@ -249,7 +249,7 @@ The five outcomes map to HTTP per binding §4 via `status.ts` (S-50).
 
 ### S-43 Challenge handler
 
-Given an accepted `auth/challenge/0.1` document: if `payload.subject` is present and is not an Ed25519 `did:key` (`^did:key:z6Mk`) → `trust-task-error` code `auth/challenge:subjectNotRecognized`, `retryable:false`. Else `issue({appId, subject, ttlMs: challengeTtlMs})` and respond with a `…/auth/challenge/0.1#response` document whose payload is `{challenge, sessionId, expiresAt}` (ISO-8601), `issuer = localVid`, `recipient = document.issuer` when present, `threadId = document.id`. Fire-and-forget `sweep()`.
+Given an accepted `auth/challenge/0.1` document: if `payload.subject` is present and is not an Ed25519 `did:key` (`^did:key:z6Mk`; *C-31: precisely — matches `^did:key:z6Mk[1-9A-HJ-NP-Za-km-z]+$` with no fragment, **and** `publicKeyFromDidKey(subject)` returns `{curve:"ed25519"}`*) → `trust-task-error` code `auth/challenge:subjectNotRecognized`, `retryable:false`. Else `issue({appId, subject, ttlMs: challengeTtlMs})` and respond with a `…/auth/challenge/0.1#response` document whose payload is `{challenge, sessionId, expiresAt}` (ISO-8601), `issuer = localVid`, `recipient = document.issuer` when present, `threadId = document.id`. Fire-and-forget `sweep()`.
 
 *(Amended, C-10.)* Build the response with the runtime's `respondWith(document, randomUUID(), payload, clock)`. That gives `threadId = document.threadId ?? document.id` and `recipient = document.issuer`. Then `stampIssuer(…, localVid)`. If `issue` throws, the handler refuses with `unavailable` (`retryable: true`, 503). `subjectNotRecognized` is built with `rejectWith` and the `CODES` constant, and the handler checks `subject` only when it is present.
 
@@ -318,7 +318,7 @@ Re-sending the **identical** signed authenticate document (same `id`, same bytes
 
 ### S-50 HTTP status mapping
 
-`status.ts` maps exactly per binding §4: handled → 200; rejected → by code (`malformedRequest` 400, `permissionDenied` 403, `unsupportedType`/`unsupportedVersion`/`expired`/`proofRequired`/`proofInvalid`/`identityMismatch`/`wrongRecipient`/`taskFailed` 422, `idConflict` 409, `unavailable` 503, `internalError` 500, any `auth/…:` family code 422 unless the code's spec says otherwise); suppressed → **no body**, status 204, and a server-side log line; duplicate with prior response → 200 + that response; duplicate without → 204; accepted (fire-and-forget) → 204. Every body is `Content-Type: application/json`; every response `Cache-Control: no-store`; CORS as `app-data`.
+`status.ts` maps exactly per binding §4: handled → 200; rejected → by code (`malformedRequest` 400, `permissionDenied` 403, `unsupportedType`/`unsupportedVersion`/`expired`/`proofRequired`/`proofInvalid`/`identityMismatch`/`wrongRecipient`/`taskFailed` 422, `idConflict` 409, `unavailable` 503, `internalError` 500, any `auth/…:` family code 422 unless the code's spec says otherwise — *C-33: no task spec maps a code to an HTTP status, so every extended code is 422, including `auth/challenge:rateLimited` (which this consumer never emits; S-40's 429 is transport-level plain JSON)*); suppressed → **no body**, status 204, and a server-side log line; duplicate with prior response → 200 + that response; duplicate without → 204; accepted (fire-and-forget) → 204. Every body is `Content-Type: application/json`; every response `Cache-Control: no-store`; CORS as `app-data`.
 
 *(Amended, C-12: resolved against binding 0.2 §4. The runtime ships no status helper.)* `statusForCode(code)` first applies `normalizeCode` (0.1 snake_case → camelCase). Then:
 - `malformedRequest` → 400
@@ -375,7 +375,7 @@ Re-sending the **identical** signed authenticate document (same `id`, same bytes
 
 ### S-61 `signIn(endpointBase, appId, appKey)`
 
-1. `POST <base>/trust-tasks?app_id&app_key` with an **unsigned** `auth/challenge/0.1` document: `id = randomUUID()`, `issuer = did`, `recipient` omitted, `issuedAt = now`, `payload = {subject: did, purpose:"login"}`.
+1. `POST <base>/trust-tasks?app_id&app_key` with an **unsigned** `auth/challenge/0.1` document: `id = randomUUID()`, `issuer = did`, `recipient` omitted, `issuedAt = now` (*C-27: `now.toISOString()`, milliseconds kept; one `options.now()` reading per document*), `payload = {subject: did, purpose:"login"}`.
 2. Build `auth/authenticate/0.3` with `id`, `issuer = did`, `recipient` omitted, `issuedAt = now`, `payload = {challenge, sessionId}`; sign with `signTrustTask` from `@openvtc/trust-tasks-proof` (`proofPurpose: "authentication"`, `verificationMethod = did + "#" + <multikey>`) **after** all members are set (GETTING-STARTED trap 4.1).
 3. POST it; on 200 read `payload.tokens.accessToken` → `localStorage.member_token` (same key the email path uses) and return `{ member_token, member }`.
 4. Any non-2xx with `application/json` is parsed as `trust-task-error` and thrown as `TrustSignInError{code, retryable}`; other failures are transport errors.
@@ -392,7 +392,7 @@ Signing:
 - **Issuer check.** `signDocument` throws if `doc.issuer !== identity.did`.
 - **Bare signature.** `endpointBase` is the Trust-Task base (`env.TRUST_TASKS_URL`). The request URL is `endpointBase` with one trailing `/` stripped, then `"/trust-tasks?app_id=…&app_key=…"` (binding §6.1).
 - **Statuses.** A 202 or 204 on authenticate is a `TrustSignInError('noResponse', true, status)`, so the app retries with new documents. A 200 whose body is a `trust-task-error` is thrown like a non-2xx.
-- **Clock.** All time comes from `options.now`.
+- **Clock.** All time comes from `options.now`. *(C-28)* `buildAuthenticateDocument` and `signDocument` inside `signIn` use the **same single** `options.now()` reading: `issuedAt = t.toISOString()`, `created = t` (formatted per the `created` rule). **Transport failures** *(C-29)*: a rejected `fetch` (no response) → `TrustSignInError('transport', true, 0)`; a non-2xx without `application/json`, or a JSON body that is not a trust-task-error → `TrustSignInError('transport', status >= 500, status)`.
 
 **Oracle (fixture test):** for a fixed seed, a fixed `now` and fixed ids, `signDocument` with a software identity produces byte-identical JSON to `signTrustTask(doc, signerFromPrivateKey("ed25519", seed), {proofPurpose:"authentication", created})`. `producer.ts` output for the same inputs equals `buildAuthenticateDocument` + `signDocument`.
 
@@ -417,13 +417,13 @@ The helper reaches generated apps only through the kit:
 
 Appended only when env has `TRUST_TASKS_URL` (new key; `TRUST_SIGNIN_KEYS = ['TRUST_TASKS_URL']`). Tells the model: import `signIn` from `./lib/trust-signin`; offer "Sign in with this device" **alongside** email-code sign-in, never instead; treat the returned `member_token` exactly as `auth_verify`'s; the identity lives in this browser only — losing it means a new member row (say so in the UI with the email path as the recovery route); do not explain DIDs to end users. **Oracle:** guidance included iff key set; `COMMUNITY_CLOUD_GUIDANCE` byte-identical before/after.
 
-*(Amended, C-19.)* `TRUST_SIGNIN_KEYS = ['TRUST_TASKS_URL', 'TRUST_TASKS_VID']`. The guidance is appended iff **both** are set (non-blank) and Community Cloud is connected. The guidance shows the call `signIn(env.TRUST_TASKS_URL, env.APP_ID, env.APP_KEY, { recipient: env.TRUST_TASKS_VID })` and says the helper is available in React/Vite (framework) projects only (S-63).
+*(Amended, C-19.)* `TRUST_SIGNIN_KEYS = ['TRUST_TASKS_URL', 'TRUST_TASKS_VID']`. The guidance is appended iff **both** are set (non-blank) and Community Cloud is connected. *(C-26)* Binding names in `src/integrations/catalog.ts`: `export const TRUST_SIGNIN_KEYS`, `export const TRUST_SIGNIN_GUIDANCE: string`, and `export function trustSigninConnected(vars: EnvVar[]): boolean` = `communityCloudConnected(vars) && TRUST_SIGNIN_KEYS.every(k => vars.some(v => v.key === k && v.value.trim()))`. `ChatPanel.tsx` pushes `TRUST_SIGNIN_GUIDANCE` into `serviceGuidance` immediately after `COMMUNITY_CLOUD_GUIDANCE` iff `trustSigninConnected(envVars)`; the predicate is the test target, the one-line ChatPanel use is checked by grep. The guidance shows the call `signIn(env.TRUST_TASKS_URL, env.APP_ID, env.APP_KEY, { recipient: env.TRUST_TASKS_VID })` and says the helper is available in React/Vite (framework) projects only (S-63).
 
 ### S-71 Builder wiring *(new, C-20)*
 
 Next to the existing `setVar` calls in `src/cloud/community-cloud.ts` (connect path, near `setVar('APP_KEY', …)`), the Builder sets two public variables:
 - `TRUST_TASKS_URL` = `${VITE_BUILDER_SUPABASE_URL}/functions/v1/app-trust-tasks`, the Trust-Task base. The helper appends `/trust-tasks`.
-- `TRUST_TASKS_VID` = `did:web:` + `new URL(VITE_BUILDER_SUPABASE_URL).host`, the same rule as S-30's default.
+- `TRUST_TASKS_VID` = the **same rule as S-30's default** applied to `VITE_BUILDER_SUPABASE_URL`: `did:web:` + `hostname`, plus `%3A<port>` when a non-default port is present (C-25). (`URL.host` with a raw `:` is wrong.)
 
 Both are set with the same third argument (`false`) as the neighbouring `setVar` calls. If the server overrides `TRUST_TASKS_LOCAL_VID`, the two disagree and every sign-in fails with `wrongRecipient`; record that operational coupling in FINDINGS.
 
@@ -431,7 +431,7 @@ Both are set with the same third argument (`false`) as the neighbouring `setVar`
 
 ### S-52 Byte-identical except `select` lists
 
-`git diff <BASE_SHA> -- supabase/functions/app-data/index.ts` touches only: `select=id,email,name` → `select=id,email,name,did` in `resolveMember` and `authVerify`; returned `member` objects gain `did` (null for email members). No other hunk.
+`git diff <BASE_SHA> -- supabase/functions/app-data/index.ts` touches only: `select=id,email,name` → `select=id,email,name,did` in `resolveMember` and `authVerify`; returned `member` objects gain `did` (null for email members). No other hunk. *(C-30)* Also permitted: inside `interface Member`, `email: string;` → `email: string | null;` and one added line `did: string | null;` — required by §1.1 item 7 (tolerate `email = null`) under TS strictness. Nothing else.
 
 ## 9. FINDINGS.md (the deliverable)
 
@@ -455,7 +455,7 @@ Accept `did:webvh`/`did:web` issuers: swap `DataIntegrityProofVerifier` (did:key
 - **NF-2** `npx vitest run` < 60 s, no network.
 - **NF-3** Dev deps only: `vitest`, `@openvtc/trust-tasks@0.26.x`, `@openvtc/trust-tasks-proof@latest-compatible`, `@noble/curves`. Edge function imports `npm:@openvtc/trust-tasks@<pinned>` and `npm:@openvtc/trust-tasks-proof@<pinned>` — pins recorded in `BASE_SHA`.
 - **NF-4** No secrets in committed files. `.env.example` gains `TRUST_TASKS_LOCAL_VID=` with a comment.
-- **NF-5** Every spike-grade shortcut carries `// SPIKE:`.
+- **NF-5** Every spike-grade shortcut carries `// SPIKE:`. *(C-34)* The mandatory minimum, grep-testable per file: `core.ts` — the exact S-30 line `// SPIKE: unsigned responses; local_vid is a label`, plus one each at the S-44 consume-before-compare, the S-47 unsigned `#response`, the S-25 subset validator, and the in-isolate rate limiter (≥ 5 total); `replay.ts` — the S-22 retention pad (≥ 1); `index.ts` — the S-51 `OPTIONS` deviation (≥ 1); `src/kit/files/lib/trust-signin.ts` — the software-custody fallback (≥ 1). More are allowed.
 
 ## 12. Test strategy (for the test agent)
 
@@ -573,3 +573,15 @@ Amendments made by the design agent in Phase 1 (2026-10-26), against the pins in
 - **C-22 · §5.** The `CoreDeps`/`CoreRequest` sketch is superseded by `DESIGN.md` §2: required `rateLimiter`, optional `randomUUID`/`randomBytes`/`log`, `PostgrestDeps` base.
 - **C-23 · §2 diagram, §1.1 item 2, §2.1 layout.** These are updated to match C-4, C-7, C-17, S-63 and S-71. HTTPS binding 0.3 (draft) adds only SSE streaming; the spec stays on 0.2. *(Q9)*
 - **C-24 · Note, no change.** `S-31`/`S-32` appear only in §10 as references to *v1's* resolver requirements (`SPIKE-SPEC-v1-oob-deferred.md`). They are not requirements of this spec. A coverage matrix lists them as `not testable here (v1 reference, Increment 2)`.
+- **C-25 · G2 item 1 (port in the default VID), S-30, S-71.** Decided: `did:web:<hostname>` plus `%3A<port>` when an explicit non-default port is present. The did:web method encodes a port as `%3A`, and S-30 and S-71 must compute the same value or every local sign-in fails with `wrongRecipient` (S-71's `URL.host` would insert a raw `:`). **Tests must change:** `localVidFromSupabaseUrl('http://localhost:54321')` is `'did:web:localhost%3A54321'`. The production examples are unchanged.
+- **C-26 · G2 item 2 (where guidance is appended), S-70.** Decided: the binding names are `trustSigninConnected(vars)`, `TRUST_SIGNIN_GUIDANCE` and `TRUST_SIGNIN_KEYS` in `catalog.ts`, and ChatPanel uses the predicate right after `COMMUNITY_CLOUD_GUIDANCE` (`ChatPanel.tsx:709-710` is where that guidance is assembled today, inline, untestable). Stubs added to `catalog.ts`. The tests should test `trustSigninConnected` directly, including the "cloud not connected → false" case.
+- **C-27 · G2 item 3 (`issuedAt` format), S-61.** Confirmed as tested: `issuedAt = now.toISOString()` with milliseconds kept. Only `created` drops `.000`, to match `signTrustTask`. **Tests OK as-is.**
+- **C-28 · G2 item 4 (`created` in `signIn`), S-61.** Confirmed as tested: `created = options.now()`, the same reading as that document's `issuedAt`. **Tests OK as-is.**
+- **C-29 · G2 item 5 (rejected `fetch`), S-61.** Decided: a rejected `fetch` → `TrustSignInError('transport', true, 0)`. A non-JSON non-2xx → `code: 'transport'`, `retryable: status >= 500`, `status`. **Tests OK; they should add** the rejected-`fetch` case.
+- **C-30 · G2 item 6 (`Member` type in app-data), S-52.** Confirmed as tested: §1.1 item 7 (tolerate `email = null`) cannot type-check without `email: string | null` and `did: string | null` in `interface Member` (`app-data/index.ts:336-340`). Those two type lines are permitted hunks. **Tests OK as-is.**
+- **C-31 · G2 item 7 (`subject` check), S-43.** Decided, stricter than the prefix: full multibase pattern, no fragment, and `publicKeyFromDidKey` must decode it as Ed25519. A prefix-only check would bind a challenge to an undecodable subject, which can never authenticate and which the task spec's `subjectNotRecognized` exists to refuse up front. **Tests OK; they should add** `did:key:z6Mk0OIl` (non-base58) and `did:key:z6Mk…#frag` → `subjectNotRecognized`.
+- **C-32 · G2 item 8 (`malformedRequest` retryability), S-41.** Confirmed as tested: `retryable: false` (SPEC §8.3 default; the runtime uses the same, `rt/document.ts`, `rt/freshness.ts`). **Tests OK as-is.**
+- **C-33 · G2 item 9 (extended code status), S-50.** Confirmed as tested: every extended code → 422. Binding 0.2 §4 has no 429 row, and no task spec assigns HTTP statuses. Rate limiting is S-40's transport-level 429. **Tests OK as-is.**
+- **C-34 · G2 item 10 (`// SPIKE:` count), NF-5.** Decided: the per-file minimum list in NF-5 is core.ts ≥ 5 (including the exact S-30 line), replay.ts ≥ 1, index.ts ≥ 1, trust-signin.ts ≥ 1. **Tests must change:** the core.ts minimum rises to 5, and assertions are added for replay.ts and trust-signin.ts.
+- **C-35 · G2 item 11 (`select=` columns), S-12 / DESIGN §3.** Confirmed as tested: the `select=` set must **equal** the listed set (order-insensitive). Subsets and supersets are contract violations. DESIGN §3 is reworded. **Tests OK as-is.**
+- **C-36 · G2 item 12 (filter-value encoding), S-12 / DESIGN §3.** Confirmed: every filter value, `select` excepted, is passed through `encodeURIComponent` exactly once, and the fake decodes as PostgREST does (`+` → space, then percent-decoding). A raw `+ & # =` in a value is therefore an implementation bug the fake rightly exposes. **Tests OK; they should add** a `sessionId` containing `+&=#` that round-trips to `notFound` (not a contract violation).
