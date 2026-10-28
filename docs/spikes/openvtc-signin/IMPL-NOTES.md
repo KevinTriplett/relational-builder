@@ -41,6 +41,20 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 
 ## Per-file
 
+### 11. `app-data.snapshot.test.ts` → S-52 edits to `app-data/index.ts` (S-52)
+
+- **1/3 green, 2 red and disputed (TEST-DISPUTE D-1).** The diff against BASE_SHA is exactly
+  the permitted set: `select=id,email,name,did` in `resolveMember` and `authVerify`;
+  `interface Member` gets `email: string | null;` and `did: string | null;` (C-30); and
+  authVerify's returned member gains `, did: member.did`. Nothing else changed.
+- The two red tests undo the member-object hunk with a greedy regex that also eats the space
+  before `}`, so the natural spelling cannot round-trip; the only spelling that does
+  (`member.name , did: …`) fails the third test's regex. The three tests cannot all pass, and
+  the implementation follows the spec and the third test. With the lazy regex suggested in D-1,
+  the file reduces to the base byte for byte (checked with a scratch script, not in `tests/`).
+- `resolveMember` returns the row as selected, so `did` comes through unchanged; the email-path
+  insert uses `return=representation`, so a new member's `did` (null) comes back from PostgREST too.
+
 ### 10. `migration.test.ts` → `supabase/migrations/20261027090000_trust_tasks_signin.sql` (S-10, S-11)
 
 - 8/8 green, 6 `todo` (the behavioural oracles need a real Postgres; not run here).

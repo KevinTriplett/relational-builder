@@ -335,8 +335,9 @@ Deno.serve(async (req: Request) => {
 
 interface Member {
   id: string;
-  email: string;
+  email: string | null;
   name: string | null;
+  did: string | null;
 }
 
 const CODE_TTL_MS = 10 * 60 * 1000;
@@ -356,7 +357,7 @@ async function resolveMember(appId: string, tokenRaw: unknown): Promise<Member |
   const sessions = res.ok ? await res.json() : [];
   if (!sessions.length || new Date(sessions[0].expires_at) < new Date()) return null;
   const memberRes = await fetch(
-    restUrl(`/app_members?id=eq.${sessions[0].member_id}&select=id,email,name`),
+    restUrl(`/app_members?id=eq.${sessions[0].member_id}&select=id,email,name,did`),
     { headers: svcHeaders() },
   );
   const members = memberRes.ok ? await memberRes.json() : [];
@@ -587,7 +588,7 @@ async function authVerify(appId: string, body: Record<string, unknown>): Promise
 
   // Upsert the member (name from the sign-in request wins when present)
   const existingRes = await fetch(
-    restUrl(`/app_members?app_id=eq.${encodeURIComponent(appId)}&email=eq.${encodeURIComponent(email)}&select=id,email,name`),
+    restUrl(`/app_members?app_id=eq.${encodeURIComponent(appId)}&email=eq.${encodeURIComponent(email)}&select=id,email,name,did`),
     { headers: svcHeaders() },
   );
   const existing = existingRes.ok ? await existingRes.json() : [];
@@ -625,7 +626,7 @@ async function authVerify(appId: string, body: Record<string, unknown>): Promise
   });
   if (!sessRes.ok) return json({ error: 'Could not start your session' }, 500);
 
-  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name } });
+  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name, did: member.did } });
 }
 
 /** Resolve the signed-in builder's email from the Authorization header */
