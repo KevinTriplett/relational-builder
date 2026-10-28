@@ -41,6 +41,12 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 
 ## Per-file
 
+### 8. `kit.test.ts` → `src/kit/index.ts`, `src/preview/bundler/versions.ts` (S-63)
+
+- 3/3 green. `KIT_FILES['/src/lib/trust-signin.ts']` from `./files/lib/trust-signin.ts?raw`;
+  `PINNED_VERSIONS` gains `@openvtc/trust-tasks-proof: 0.1.3` and `@noble/curves: 2.4.0`.
+  `@openvtc/trust-tasks` is not pinned: the helper imports it type-only, so it never reaches esm.sh.
+
 ### 7. `producer-helper.fixture.test.ts` → `src/kit/files/lib/trust-signin.ts` (S-60, S-61, S-62)
 
 - 16/16 green; `tsc -p tsconfig.functions.json` and `tsc -p tsconfig.app.json` clean.

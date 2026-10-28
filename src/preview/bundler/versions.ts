@@ -32,6 +32,9 @@ export const PINNED_VERSIONS: Record<string, string> = {
   'qrcode': '1.5.4',
   'marked': '15.0.7',
   'uuid': '11.1.0',
+  // Trust Tasks sign-in helper (src/kit/files/lib/trust-signin.ts, S-63).
+  '@openvtc/trust-tasks-proof': '0.1.3',
+  '@noble/curves': '2.4.0',
 };
 
 const ESM_CDN = 'https://esm.sh';

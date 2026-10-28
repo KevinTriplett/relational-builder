@@ -35,6 +35,7 @@ import appBarSrc from './files/components/ui/app-bar.tsx?raw';
 import bottomNavSrc from './files/components/ui/bottom-nav.tsx?raw';
 import emptyStateSrc from './files/components/ui/empty-state.tsx?raw';
 import skeletonSrc from './files/components/ui/skeleton.tsx?raw';
+import trustSigninSrc from './files/lib/trust-signin.ts?raw';
 
 /** Kit sources by the path they occupy inside a generated project. */
 export const KIT_FILES: Record<string, string> = {
@@ -56,6 +57,8 @@ export const KIT_FILES: Record<string, string> = {
   '/src/components/ui/bottom-nav.tsx': bottomNavSrc,
   '/src/components/ui/empty-state.tsx': emptyStateSrc,
   '/src/components/ui/skeleton.tsx': skeletonSrc,
+  // Trust Tasks "Sign in with this device" helper (S-63); framework-shaped projects only.
+  '/src/lib/trust-signin.ts': trustSigninSrc,
 };
 
 /** Resolve an import specifier (`@/…` or a relative path already joined to
