@@ -41,6 +41,18 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 
 ## Per-file
 
+### 5. `core.challenge.test.ts` → challenge handler (S-42, S-43, S-23)
+
+- 16/16 green with no code change after file 4 (notes-only commit).
+- Subject check (C-31): `^did:key:z6Mk[1-9A-HJ-NP-Za-km-z]+$` **and**
+  `publicKeyFromDidKey(subject)?.curve === "ed25519"` inside a try/catch (the decoder may
+  throw on a non-key multibase such as `did:key:z6Mkabc`). Checked only when `subject`
+  is present. A trailing space or `#frag` fails the regex.
+- Proof policy for both tasks is `{kind:"verify", verify: PurposeCheckingVerifier(
+  DataIntegrityProofVerifier({now: () => deps.now().getTime()}))}`; the challenge spec's
+  `isProofRequired: false` makes it optional (DESIGN Q2 held exactly).
+- `sweep()` is fired with `void` after a successful `issue`; `sweep` already swallows errors.
+
 ### 4. `core.auth.test.ts` → `core.ts`, `status.ts`, `members.ts`, `index.ts` (S-30, S-40, S-41, S-49, S-50, S-51)
 
 - 29/29 green; `tsc -p tsconfig.functions.json` clean. Files 1–3 still green.
