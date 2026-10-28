@@ -41,6 +41,26 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 
 ## Per-file
 
+### 7. `producer-helper.fixture.test.ts` → `src/kit/files/lib/trust-signin.ts` (S-60, S-61, S-62)
+
+- 16/16 green; `tsc -p tsconfig.functions.json` and `tsc -p tsconfig.app.json` clean.
+- Library-source note: `signTrustTask` (`proof/sign.js`) hashes with `@noble/hashes/sha2.js`,
+  which S-63 does not allow as a bare import in the helper. `signDocument` uses
+  `crypto.subtle.digest('SHA-256')` instead; the fixture proves byte equality, including the
+  `created` `.000Z` → `Z` rule, which is in `sign.js`'s private `timestamp()` and not in any doc.
+- Library-source note: `didKeyFromPublicKey` returns the full verification method
+  (`did:key:<mb>#<mb>`), not the DID; the DID is the part before `#` (same as `signerFromPrivateKey`).
+- Type URIs are string constants in the helper, because `@openvtc/trust-tasks` may only be a
+  type-only import there (S-63).
+- Persisted record: `{kind:'bootstrap', custody, did, verificationMethod}` plus either the
+  non-extractable `privateKey`/`publicKey` CryptoKeys or the 32-byte `seed`. An existing record
+  is loaded as-is; minting tries `generateKey` directly and falls back only with
+  `allowInMemoryFallback`, else `TrustSignInError('unsupported', false, 0)` with nothing stored.
+- `signIn` errors: rejected fetch → `transport/true/0`; 202/204 → `noResponse/true/status`;
+  a JSON trust-task-error (any status, 200 included) → its code and `retryable`; anything else
+  non-2xx or non-JSON → `transport/status>=500/status`.
+- `TrustSignInError('issuerMismatch', false, 0)` is what `signDocument` throws before signing.
+
 ### 6. `core.authenticate.test.ts` → authenticate handler, `members.ts` (S-11, S-24, S-42, S-44…S-48)
 
 - 41/41 green with no code change after file 4 (notes-only commit).
