@@ -41,6 +41,15 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 
 ## Per-file
 
+### 10. `migration.test.ts` → `supabase/migrations/20261027090000_trust_tasks_signin.sql` (S-10, S-11)
+
+- 8/8 green, 6 `todo` (the behavioural oracles need a real Postgres; not run here).
+- The identity check is added inside `do $$ … if not exists (select 1 from pg_constraint
+  where conname = 'app_members_identity_chk') … $$`. Not applied to any database (no deploys).
+- Untested by the parser: `alter column email drop not null` is idempotent in Postgres, and
+  the check constraint will fail to add if any existing row has both email and did null
+  (impossible before this migration, since email was NOT NULL).
+
 ### 9. `catalog.test.ts` → `catalog.ts`, `ChatPanel.tsx`, `community-cloud.ts` (S-70, S-71)
 
 - 5/5 green; `tsc -p tsconfig.app.json` and ESLint clean on the touched files.
