@@ -31,13 +31,35 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
     route through `#/$defs/*` resolution or that `Ext`/`minimum` check, which is
     why the single `LOCAL_REF` bug below explained all of them.
 
+- **Files 4–12 (Opus).** Source reading `GETTING-STARTED.md` did not cover:
+  - `consumeInbound` passes a handler-returned error through verbatim and records exactly the
+    returned object with `recordResponse` (`rt/consume.ts`, `settle`), so issuer re-stamping
+    must happen inside the handler for the retained copy to be right; runtime-built rejections
+    are re-stamped afterwards.
+  - Runtime rejections go through `reject(transport, …)` → `rejectWithRecipient` with
+    `issuer: request.recipient` and `recipient: doc.issuer` (`rt/transport.ts:103`,
+    `rt/document.ts:341`); `respondWith` sets `threadId = threadId ?? id` and `type = <bare>#response`.
+  - `slugFromTypeUri` throws for anything not under `https://trusttasks.org/spec/`
+    (`rt/codes.ts:180`), so `classifyType` wraps it.
+  - `normalizeCode` maps the 0.1 snake_case spellings (and `canceled`) to camelCase
+    (`rt/codes.ts`), which `statusForCode` relies on.
+  - `publicKeyFromDidKey` checks only the multicodec header, not the key length
+    (`proof/keys.js:17-38`), and accepts a `#fragment`; the C-31 regex is what rejects fragments.
+  - `signTrustTask` (`proof/sign.js`) hashes with `@noble/hashes` and formats `created` with a
+    private `timestamp()` (`.000Z` → `Z`); `didKeyFromPublicKey` returns `did:key:<mb>#<mb>`
+    (a verification method, not a DID).
+  - `DataIntegrityProofVerifier` takes `{now}` in milliseconds and enforces `created` ≤ now + 60 s.
+
 ## DESIGN §2 signature changes
 
-(none yet — all implemented files keep the stub signatures from `DESIGN.md` §2 / Phase 1.)
+None. Every exported signature in `DESIGN.md` §2 is implemented as stubbed (parameter `_`
+prefixes dropped; optional parameters given their documented defaults).
 
 ## Blockers / test disputes
 
-(none yet. Disputed tests, if any, are logged in `TEST-DISPUTE.md`.)
+- **D-1** (`TEST-DISPUTE.md`): two of the three `app-data.snapshot.test.ts` tests stay red. Their
+  `stripDid` regex eats the space before `}`, so the permitted member-object hunk cannot round-trip,
+  and the only spelling that does fails the third test. Everything else is green.
 
 ## Per-file
 
@@ -248,4 +270,161 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 
 ## Finish-line outputs (from §4)
 
-(pasted after every file is green)
+Run 2026-10-28 on branch `spike/openvtc-signin-impl` after the file-12 commit. `exit N` lines were
+appended by the wrapper; an empty output above `exit 0` means the tool printed nothing. The `grep`
+prints nothing (exit 1 = no matches).
+
+### `npx vitest run`
+
+```text
+
+ RUN  v5.0.5 /Users/kevintriplett/Documents/Documents - Kevin’s MacBook Pro/BACKUP/PROJECTS/SOFTWARE/relational-builder-impl
+
+ ❯ tests/app-trust-tasks/app-data.snapshot.test.ts (3 tests | 2 failed) 49ms
+   ❯ app-data changes (S-52) (3)
+     × S-52 every hunk in app-data/index.ts since BASE_SHA is a member select list gaining did, a member object gaining did, or the Member type tolerating email null / gaining did 26ms
+     × S-52 the email path is otherwise byte-identical: removing the permitted did changes from the current file yields the base file 21ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/app-trust-tasks/app-data.snapshot.test.ts > app-data changes (S-52) > S-52 every hunk in app-data/index.ts since BASE_SHA is a member select list gaining did, a member object gaining did, or the Member type tolerating email null / gaining did
+AssertionError: {"removed":["  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name } });"],"added":["  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name, did: member.did } });"]}: expected '  return json({ ok: true, member_toke…' to be '  return json({ ok: true, member_toke…' // Object.is equality
+
+Expected: "  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name } });"
+Received: "  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name} });"
+
+ ❯ tests/app-trust-tasks/app-data.snapshot.test.ts:37:70
+     35|       const added = h.added.filter((l) => !isDidField(l));
+     36|       expect(added.length, JSON.stringify(h)).toBe(h.removed.length);
+     37|       added.forEach((l, i) => expect(stripDid(l), JSON.stringify(h)).t…
+       |                                                                      ^
+     38|     }
+     39|   });
+ ❯ tests/app-trust-tasks/app-data.snapshot.test.ts:37:13
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  tests/app-trust-tasks/app-data.snapshot.test.ts > app-data changes (S-52) > S-52 the email path is otherwise byte-identical: removing the permitted did changes from the current file yields the base file
+AssertionError: expected '/**\n * Supabase Edge Function: app-d…' to be '/**\n * Supabase Edge Function: app-d…' // Object.is equality
+
+- Expected
++ Received
+
+@@ -623,11 +623,11 @@
+        expires_at: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
+      }),
+    });
+    if (!sessRes.ok) return json({ error: 'Could not start your session' }, 500);
+
+-   return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name } });
++   return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name} });
+  }
+
+  /** Resolve the signed-in builder's email from the Authorization header */
+  async function resolveBuilder(req: Request): Promise<string | null> {
+    const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+
+ ❯ tests/app-trust-tasks/app-data.snapshot.test.ts:45:18
+     43|     const now = readFileSync(ROOT + FILE, 'utf8');
+     44|     const back = now.split('\n').filter((l) => !isDidField(l)).map(str…
+     45|     expect(back).toBe(base);
+       |                  ^
+     46|   });
+     47|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 12 passed (13)
+      Tests  2 failed | 179 passed | 6 todo (187)
+   Start at  16:42:33
+   Duration  1.01s (import 77%, tests 15%, transform 5%, setup 2%, worker 1%)
+
+exit 1  (vitest's own status, re-run without the pipe; the pipe had reported sed's 0)
+```
+
+### `npx tsc --noEmit -p tsconfig.functions.json`
+
+```text
+exit 0
+```
+
+### `npx tsc --noEmit -p tsconfig.app.json`
+
+```text
+exit 0
+```
+
+### `npx eslint supabase/functions/app-trust-tasks src/kit/files/lib/trust-signin.ts src/integrations/catalog.ts src/cloud/community-cloud.ts`
+
+```text
+exit 0
+```
+
+### `deno check supabase/functions/app-trust-tasks/index.ts`
+
+```text
+Check supabase/functions/app-trust-tasks/index.ts
+exit 0
+```
+
+### `deno eval 'await import("npm:@openvtc/trust-tasks@0.26.29"); await import("npm:@openvtc/trust-tasks-proof@0.1.3"); console.log("ok")'`
+
+```text
+ok
+exit 0
+```
+
+### `grep -rn "Deno\." supabase/functions/app-trust-tasks/{core,challenges,replay,members,status}.ts`
+
+```text
+exit 1 (1 = no matches)
+```
+
+### `git diff 6b68ea634f37a70e3a5ef3146d74a02072eda094 -- supabase/functions/app-data/index.ts`
+
+```diff
+diff --git a/supabase/functions/app-data/index.ts b/supabase/functions/app-data/index.ts
+index d4bb59e..59dafd3 100644
+--- a/supabase/functions/app-data/index.ts
++++ b/supabase/functions/app-data/index.ts
+@@ -335,8 +335,9 @@ Deno.serve(async (req: Request) => {
+ 
+ interface Member {
+   id: string;
+-  email: string;
++  email: string | null;
+   name: string | null;
++  did: string | null;
+ }
+ 
+ const CODE_TTL_MS = 10 * 60 * 1000;
+@@ -356,7 +357,7 @@ async function resolveMember(appId: string, tokenRaw: unknown): Promise<Member |
+   const sessions = res.ok ? await res.json() : [];
+   if (!sessions.length || new Date(sessions[0].expires_at) < new Date()) return null;
+   const memberRes = await fetch(
+-    restUrl(`/app_members?id=eq.${sessions[0].member_id}&select=id,email,name`),
++    restUrl(`/app_members?id=eq.${sessions[0].member_id}&select=id,email,name,did`),
+     { headers: svcHeaders() },
+   );
+   const members = memberRes.ok ? await memberRes.json() : [];
+@@ -587,7 +588,7 @@ async function authVerify(appId: string, body: Record<string, unknown>): Promise
+ 
+   // Upsert the member (name from the sign-in request wins when present)
+   const existingRes = await fetch(
+-    restUrl(`/app_members?app_id=eq.${encodeURIComponent(appId)}&email=eq.${encodeURIComponent(email)}&select=id,email,name`),
++    restUrl(`/app_members?app_id=eq.${encodeURIComponent(appId)}&email=eq.${encodeURIComponent(email)}&select=id,email,name,did`),
+     { headers: svcHeaders() },
+   );
+   const existing = existingRes.ok ? await existingRes.json() : [];
+@@ -625,7 +626,7 @@ async function authVerify(appId: string, body: Record<string, unknown>): Promise
+   });
+   if (!sessRes.ok) return json({ error: 'Could not start your session' }, 500);
+ 
+-  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name } });
++  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name, did: member.did } });
+ }
+ 
+ /** Resolve the signed-in builder's email from the Authorization header */
+```
+
