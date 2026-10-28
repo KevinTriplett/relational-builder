@@ -2,6 +2,15 @@
 
 Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 
+## Implementer handover
+
+- **Files 1–3** (`challenges`, `replay`, `schema`) were implemented by a local model
+  (qwen3.8 27B through Ollama) over about 36 hours; it stopped after file 3 because of
+  repeated timeouts and a compaction stall. Its entries below are kept as written.
+- **Files 4–12** and the §4 finish line were implemented by Claude Opus 5.5 (Claude Code),
+  building on the existing `challenges.ts`, `replay.ts` and the S-25 validator in `core.ts`
+  without rewriting them.
+
 ## Library-source notes
 
 - **File 3 (S-25, the schema subset validator) required reading the real bundled
@@ -31,6 +40,29 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 (none yet. Disputed tests, if any, are logged in `TEST-DISPUTE.md`.)
 
 ## Per-file
+
+### 4. `core.auth.test.ts` → `core.ts`, `status.ts`, `members.ts`, `index.ts` (S-30, S-40, S-41, S-49, S-50, S-51)
+
+- 29/29 green; `tsc -p tsconfig.functions.json` clean. Files 1–3 still green.
+- `core.auth.test.ts` already drives full sign-ins (`signInFlow`) and the `index.ts`
+  routing shim, so the whole pipeline landed in this commit: app auth, parse/dispatch,
+  both `consumeInbound` handlers, `status.ts`, `members.ts` and `index.ts` (48 lines).
+  Files 5 and 6 were green on arrival as a result; their commits only add notes.
+- Order in `handleTrustTask`: 401 → `rateLimiter.hit` → P1 (rejected fetch / 5xx → 503;
+  other non-2xx, e.g. PostgREST's 400 for a non-uuid id, → 403) → disabled 403 → body
+  must be an object with a string `type` (else 400) → `classifyType` (422) →
+  `checkFrameworkShape` (400) → `consumeInbound`. An outer try/catch turns anything
+  unforeseen into a 500 `internalError` document, so it never throws.
+- `classifyType`: `unsupportedVersion` only for a fragment-free `https://trusttasks.org/spec/`
+  URI whose last segment is `MAJOR.MINOR` and whose `slugFromTypeUri` equals a registered
+  slug (`slugFromTypeUri` throws on non-trust-task URIs, so it is wrapped).
+- Every emitted document goes through `stampIssuer`: handler output (inside the handler,
+  so the copy retained by P9 is already stamped) and runtime rejections (in `toHttp`).
+  `errorDocument` builds the pre-parse errors with `issuer = localVid` directly.
+- `index.ts` wraps `fetch` in an arrow (`(i, init) => fetch(i, init)`) because the stores
+  call `this.fetch(...)`; a bare global `fetch` invoked as a method throws "Illegal
+  invocation" in browsers and is fragile elsewhere. It also reads `fetch` at call time,
+  which is what lets the test's `vi.stubGlobal('fetch')` take effect.
 
 ### 3. `schema.test.ts` → `supabase/functions/app-trust-tasks/core.ts` (S-25)
 
