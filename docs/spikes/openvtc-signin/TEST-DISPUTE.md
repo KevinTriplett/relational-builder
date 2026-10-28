@@ -5,6 +5,8 @@ spec sentence it contradicts, quoted exactly.
 
 ## D-1 · `tests/app-trust-tasks/app-data.snapshot.test.ts` — `stripDid` eats the space before `}`
 
+**RESOLVED (T):** the test was wrong. `stripDid`'s greedy `[^,}]+` swallowed the space before `}`. Changed it to the lazy `[^,}]*?`, so the whitespace before `}` survives. All three S-52 tests now pass, and they still go red on an unpermitted hunk (checked, then restored).
+
 **Tests (both fail):**
 - `S-52 every hunk in app-data/index.ts since BASE_SHA is a member select list gaining did, a member object gaining did, or the Member type tolerating email null / gaining did`
 - `S-52 the email path is otherwise byte-identical: removing the permitted did changes from the current file yields the base file`

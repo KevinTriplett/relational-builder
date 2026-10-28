@@ -26,7 +26,7 @@ function hunks(): Array<{ removed: string[]; added: string[] }> {
 
 /** An added line with every permitted `did` addition removed. */
 const stripDid = (l: string) =>
-  l.replace(/select=id,email,name,did\b/g, 'select=id,email,name').replace(/,\s*did:\s*[^,}]+(?=\s*})/g, '').replace(/email: string \| null;/, 'email: string;');
+  l.replace(/select=id,email,name,did\b/g, 'select=id,email,name').replace(/,\s*did:\s*[^,}]*?(?=\s*})/g, '').replace(/email: string \| null;/, 'email: string;');
 const isDidField = (l: string) => /^\s*did\??:\s*string(\s*\|\s*null)?;\s*$/.test(l);
 
 describe('app-data changes (S-52)', () => {

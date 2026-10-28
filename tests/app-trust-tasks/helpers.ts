@@ -105,7 +105,7 @@ export async function post(env: Env, rawBody: unknown, appId = APP_A, appKey = K
   return res;
 }
 
-export interface ErrorDoc extends TrustTaskDocument<{ code: string; message?: string; retryable: boolean; inResponseTo?: { typeUri: string; id?: string } }> {}
+export type ErrorDoc = TrustTaskDocument<{ code: string; message?: string; retryable: boolean; inResponseTo?: { typeUri: string; id?: string } }>;
 
 export function asError(res: CoreResponse): ErrorDoc {
   const body = res.body as ErrorDoc;
