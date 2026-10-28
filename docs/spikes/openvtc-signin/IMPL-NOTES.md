@@ -41,6 +41,22 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 
 ## Per-file
 
+### 6. `core.authenticate.test.ts` → authenticate handler, `members.ts` (S-11, S-24, S-42, S-44…S-48)
+
+- 41/41 green with no code change after file 4 (notes-only commit).
+- Handler order exactly per C-11: P3 consume → `constantTimeEqual` → acting party
+  (`principal ?? issuer`) vs stored subject → S-46 → S-45 → P11/P12(/P11 on 409) → P13.
+  The whole handler body sits in a try/catch that returns a retryable `unavailable`
+  refusal, so the runtime releases the claim (P10) and never leaves it in flight.
+- `constantTimeEqual` walks `max(len)` UTF-16 code units and folds the length difference in.
+- `session.id` is a fresh `randomUUID()`; the token comes from `memberTokenFactory` or
+  `defaultMemberToken(deps.randomUUID)`, so the two are independent draws.
+- `upsertMemberByDid` returns only `{id,email,name,did}` even though P12 answers with the
+  full row; `ext` member `email` is the literal `null` (S-47).
+- Library-source note: `consumeInbound` passes a handler-returned error through verbatim and
+  `settle` records exactly the object the handler returned, so `stampIssuer` has to happen
+  inside the handler for the retained (P9) copy to carry `issuer = localVid` too.
+
 ### 5. `core.challenge.test.ts` → challenge handler (S-42, S-43, S-23)
 
 - 16/16 green with no code change after file 4 (notes-only commit).
