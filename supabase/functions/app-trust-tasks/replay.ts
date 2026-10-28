@@ -14,6 +14,8 @@ import {
 } from "npm:@openvtc/trust-tasks@0.26.29";
 import type { PostgrestDeps } from "./core.ts";
 
+// SPIKE: retention pad — the runtime's recordExpiry stops skewMs before freshness does
+// (rt/freshness.ts:143 vs :182), so until_at is padded by DEFAULT_SKEW_MS (S-22, C-3).
 /** Default padding added to the runtime's retainUntil (S-22: recordExpiry omits skewMs). */
 export const DEFAULT_RETENTION_PAD_MS: number = DEFAULT_SKEW_MS;
 

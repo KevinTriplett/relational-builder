@@ -41,6 +41,16 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 
 ## Per-file
 
+### 12. `fake-postgrest.test.ts`, `nonfunctional.test.ts` → `.env.example`, `replay.ts` (S-12, NF-3, NF-4, NF-5)
+
+- Both green. `fake-postgrest.test.ts` was already green; `index.ts` landed in file 4.
+- NF-4: `.env.example` gains a commented `TRUST_TASKS_LOCAL_VID=` (empty), explaining the
+  coupling with the Builder's `TRUST_TASKS_VID`.
+- NF-5: `replay.ts` already had one `// SPIKE:` (app scoping); added the one NF-5 names, at
+  the S-22 retention pad. `core.ts` has exactly 5 (S-30 label, rate limiter, S-44
+  consume-before-compare, S-47 unsigned `#response`, S-25 subset validator); `index.ts` 1
+  (OPTIONS); `trust-signin.ts` 1 (software custody).
+
 ### 11. `app-data.snapshot.test.ts` → S-52 edits to `app-data/index.ts` (S-52)
 
 - **1/3 green, 2 red and disputed (TEST-DISPUTE D-1).** The diff against BASE_SHA is exactly
