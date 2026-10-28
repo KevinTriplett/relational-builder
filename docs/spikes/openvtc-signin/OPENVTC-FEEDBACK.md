@@ -216,3 +216,39 @@ In `bindings/https/0.2/spec.md`:
 ### OVTC-34 · `friction` · No envelope validation in the runtime
 
 `consumeInbound` does no framework-schema check (SPEC §7.2 item 1). A numeric `id`, `payload: null`, or a string `proof` all reach the pipeline. Consumers must write this check themselves; ours does. **Fix:** export a `validateEnvelope` (or the framework schema as a value, as is already done for payloads), and run it at the top of `consumeInbound`.
+
+## Phase 3 — implementing against the libraries (2026-10-28)
+
+Items the implementer found by reading library source because the docs didn't cover them. They come from source reading at the pinned versions (0.26.29 and 0.1.3) and were not separately probed unless marked.
+
+### OVTC-35 · `docs` · The bundled payload schemas aren't pointed at
+
+To validate payloads (see OVTC-21), the implementer had to find the schemas in `dist/auth/challenge/0.1/payload.js` and `dist/auth/authenticate/0.3/payload.js`. Nothing in `GETTING-STARTED.md` says they ship, that they are exported as values, or that they use only local `#/$defs/*` references. **Fix:** a "Validating payloads" section listing the schema exports and the JSON Schema keywords they use, so a consumer can choose or write a validator.
+
+### OVTC-36 · `friction` · A handler-returned error is recorded verbatim, so issuer fixes must happen inside the handler
+
+`consumeInbound` passes an error document returned by the handler through unchanged, and `recordResponse` stores exactly that object (`rt/consume.ts`, `settle`). Runtime-built rejections go through `rejectWithRecipient` with `issuer: request.recipient` (`rt/transport.ts:103`, `rt/document.ts:341`). A consumer working around OVTC-8 therefore has to set the issuer in two places: inside the handler, so the retained copy that duplicates replay is correct, and on the runtime's own rejections afterwards. **Fix:** resolving OVTC-8 removes this. Until then, document where the issuer of each kind of response comes from.
+
+### OVTC-37 · `friction` · `slugFromTypeUri` throws on foreign type URIs
+
+`slugFromTypeUri` throws for any type not under `https://trusttasks.org/spec/` (`rt/codes.ts:180`). A server classifying arbitrary inbound documents has to wrap it in `try`. **Fix:** return `undefined` (or offer `trySlugFromTypeUri`), and document the behaviour.
+
+### OVTC-38 · `bug` · `publicKeyFromDidKey` doesn't check key length, and accepts a fragment
+
+`publicKeyFromDidKey` (`proof/keys.js:17-38`, 0.1.3) checks only the multicodec header, not that the decoded Ed25519 key is 32 bytes, and accepts `did:key:…#fragment`. Our server rejects fragments with its own regex first. **Fix:** reject keys that aren't 32 bytes, and either reject fragments or document that a verification-method id is accepted.
+
+### OVTC-39 · `docs` · `didKeyFromPublicKey` returns a verification method, not a DID
+
+`didKeyFromPublicKey` returns `did:key:<mb>#<mb>`. A consumer storing "the member's DID" from it stores a verification-method id, which won't equal the `issuer` of the documents that member signs. **Fix:** rename it (or add `didFromPublicKey` returning the bare DID), and state the return shape in the JSDoc.
+
+### OVTC-40 · `docs` · Undocumented verifier and signer details
+
+- `DataIntegrityProofVerifier` takes `{ now }` in **milliseconds** and allows `proof.created` up to 60 s in the future. Neither is documented, and both matter to anyone injecting a clock.
+- `signTrustTask` formats `created` without milliseconds (`.000Z` becomes `Z`). Fine, but undocumented; a test comparing timestamps trips on it.
+- `normalizeCode` maps the 0.1 snake_case codes (and `canceled`) to camelCase. That is useful for mixed-version peers but appears only in source.
+
+**Fix:** a short "Clocks and formats" note in the proof package README, and a sentence on `normalizeCode` in the runtime docs.
+
+### OVTC-41 · `positive` · With the source pinned, the libraries were straightforward to build on
+
+With the package versions pinned and the source available, the whole server (challenge, authenticate, replay, status mapping, member upsert) went from failing tests to green with no changes to the library and no forks. Every gap found was in documentation or a small API shape. The `rt/` runtime source was readable enough to answer each question directly. That's a good sign for adopters, but it depends on OVTC-3 (reading source at a tag), which the docs should not require.
