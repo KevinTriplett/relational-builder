@@ -249,18 +249,32 @@ export function communityCloudConnected(vars: EnvVar[]): boolean {
   return COMMUNITY_CLOUD_KEYS.every(k => keys.has(k));
 }
 
-// ── Trust Task sign-in (spike S-70) — SPIKE STUB, Phase 1/G2 design agent ──
+// ── Trust Task sign-in (spike S-70) ─────────────────────────────────
 
 /** Env keys that switch on "Sign in with this device" guidance (S-70). */
 export const TRUST_SIGNIN_KEYS = ['TRUST_TASKS_URL', 'TRUST_TASKS_VID'];
 
 /** True iff Community Cloud is connected and every TRUST_SIGNIN_KEYS value is non-blank (S-70). */
-export function trustSigninConnected(_vars: EnvVar[]): boolean {
-  throw new Error('not implemented');
+export function trustSigninConnected(vars: EnvVar[]): boolean {
+  return communityCloudConnected(vars) && TRUST_SIGNIN_KEYS.every(k => vars.some(v => v.key === k && v.value.trim()));
 }
 
-/** Prompt guidance for the trust-signin kit helper (S-70); content written by the implementer. */
-export const TRUST_SIGNIN_GUIDANCE: string = '';
+/** Prompt guidance for the trust-signin kit helper (S-70); follows COMMUNITY_CLOUD_GUIDANCE. */
+export const TRUST_SIGNIN_GUIDANCE: string = [
+  '- **"Sign in with this device" (passwordless, built into Community Cloud).** In React/Vite (framework) projects, the kit ships a helper at `src/lib/trust-signin.ts` that signs a neighbor in with a key their browser creates and keeps — no email round-trip:',
+  '  ```javascript',
+  '  import { signIn } from "./lib/trust-signin";',
+  '  const { member_token, member } = await signIn(env.TRUST_TASKS_URL, env.APP_ID, env.APP_KEY, { recipient: env.TRUST_TASKS_VID });',
+  '  // member_token is already saved to localStorage("member_token") — use it exactly like the one from auth_verify',
+  '  ```',
+  '  Rules:',
+  '  - Offer a "Sign in with this device" button **alongside** the email-code sign-in, never instead of it.',
+  '  - Treat the returned `member_token` exactly like the one `auth_verify` returns (create/update/delete, `auth_me`, `auth_signout` all work the same).',
+  '  - The identity lives in this browser only. Clearing site data or switching devices means signing in again creates a new member, so say that in the UI in one plain sentence and point to email sign-in as the way to keep one account across devices.',
+  '  - Do not explain DIDs, keys or cryptography to people using the app; if you show the identity at all, use `shortDid(did)` from the same file.',
+  '  - Errors are thrown as `TrustSignInError` with `code` and `retryable`: if `retryable` is true, offer "Try again"; otherwise fall back to email sign-in.',
+  '  - The helper is available in React/Vite (framework) projects only. In a single-file HTML or plain React (Sandpack) tool, use email sign-in.',
+].join('\n');
 
 export const COMMUNITY_CLOUD_GUIDANCE = [
   '- **Community Cloud is connected** — zero-setup shared storage hosted by the Relational Tech Project. The app stores JSON documents in named collections via POST requests (get `env` per the Environment Variables rules — `import { env } from "./env.js"` in plain HTML, `from "./env"` in React):',

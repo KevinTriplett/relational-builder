@@ -41,6 +41,19 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 
 ## Per-file
 
+### 9. `catalog.test.ts` → `catalog.ts`, `ChatPanel.tsx`, `community-cloud.ts` (S-70, S-71)
+
+- 5/5 green; `tsc -p tsconfig.app.json` and ESLint clean on the touched files.
+- `ChatPanel` *unshifts* `COMMUNITY_CLOUD_GUIDANCE` to the front of `serviceGuidance`, so
+  "immediately after" is `serviceGuidance.splice(1, 0, TRUST_SIGNIN_GUIDANCE)`, gated by
+  `trustSigninConnected(envVars)` (which already implies Community Cloud is connected).
+- `community-cloud.ts`: `trustTasksUrl()` / `trustTasksVid()` helpers next to `fnUrl()`;
+  `attachAppToProject` sets both with `false`. `trustTasksVid()` returns `''` if
+  `VITE_BUILDER_SUPABASE_URL` is not a URL, which keeps `trustSigninConnected` false instead of
+  throwing during attach. Beyond the spec: `detachAppFromProject` also removes the two keys,
+  so a detached project stops getting the guidance.
+- The guidance names `shortDid` and `TrustSignInError.retryable` as well as the required items.
+
 ### 8. `kit.test.ts` → `src/kit/index.ts`, `src/preview/bundler/versions.ts` (S-63)
 
 - 3/3 green. `KIT_FILES['/src/lib/trust-signin.ts']` from `./files/lib/trust-signin.ts?raw`;

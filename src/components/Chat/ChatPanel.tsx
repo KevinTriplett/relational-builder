@@ -27,6 +27,8 @@ import {
   getConnectedIntegrations,
   communityCloudConnected,
   COMMUNITY_CLOUD_GUIDANCE,
+  trustSigninConnected,
+  TRUST_SIGNIN_GUIDANCE,
   RESEND_CLOUD_GUIDANCE,
   AI_CLOUD_GUIDANCE,
   AI_PLAN_GUIDANCE,
@@ -708,6 +710,7 @@ export function ChatPanel() {
     );
     const cloudAttached = communityCloudConnected(envVars);
     if (cloudAttached) serviceGuidance.unshift(COMMUNITY_CLOUD_GUIDANCE);
+    if (trustSigninConnected(envVars)) serviceGuidance.splice(1, 0, TRUST_SIGNIN_GUIDANCE);
     // A plan member with Community Cloud on and no AI connected at all: the
     // model should point at the one-click switch, not write serverless code
     const anyAiConnected = connectedServices.some(s => s.id in aiMarkers);
