@@ -4,8 +4,23 @@ Progress log for Phase 3 (BRIEF-I.md §5). Updated per file as it goes green.
 
 ## Library-source notes
 
-(none yet — files 1–2 implement only against DESIGN.md §3 and the test fixtures;
-no library source beyond `GETTING-STARTED.md` was needed.)
+- **File 3 (S-25, the schema subset validator) required reading the real bundled
+  schemas, which `GETTING-STARTED.md` did not point at.** They live in
+  `node_modules/@openvtc/trust-tasks/dist/auth/challenge/0.1/payload.js` and
+  `.../authenticate/0.3/payload.js` (a `src/` mirror exists too). What I needed:
+  - `Ext` def = `{ type:'object', minProperties:1, additionalProperties:true,
+    propertyNames:{ pattern:"^[a-z][a-z0-9-]*(\\.[a-z0-9-]+)+$" } }` — the
+    reverse-DNS `propertyNames` pattern accepts `org.relationalbuilder.cloud`
+    (multiple `.`-segments) but rejects a bare `member` (no `.`).
+  - `TokenBundle.expiresIn` = `{ type:'integer', minimum:1 }`, so `expiresIn:0`
+    must fail.
+  - The response schemas resolve through `#/$defs/Response` → `Session` /
+    `TokenBundle` / `Ext`, all *local* `$ref`s. Every keyword the bundled schemas
+    use is within the supported 20, so `assertSchemaSupported` must not throw on
+    them.
+  - The 4 red cases (`schema.test.ts` L44, L52/57, L87/94, L138/143/144/145) all
+    route through `#/$defs/*` resolution or that `Ext`/`minimum` check, which is
+    why the single `LOCAL_REF` bug below explained all of them.
 
 ## DESIGN §2 signature changes
 
@@ -16,6 +31,34 @@ no library source beyond `GETTING-STARTED.md` was needed.)
 (none yet. Disputed tests, if any, are logged in `TEST-DISPUTE.md`.)
 
 ## Per-file
+
+### 3. `schema.test.ts` → `supabase/functions/app-trust-tasks/core.ts` (S-25)
+
+- 12/12 green via `npx vitest run tests/app-trust-tasks/schema.test.ts`.
+- **Root cause of the 4 reds:** `LOCAL_REF` was a *groupless* regex
+  (`/^#\/\$defs\/[^/]+$/`), so `LOCAL_REF.exec(ref)[1]` was always `undefined`.
+  `checkSchema`'s `$ref` branch does `const m = LOCAL_REF.exec(schema.$ref);
+  const target = m ? defs[m[1]] : undefined;` — with `m[1]` undefined, every
+  `#/$defs/<name>` resolution fell through to `false`, failing every schema that
+  resolves a local `$ref` (the challenge/0.1 examples, the authenticate/0.3
+  response examples, the hand-built `$ref` case, and the `ext` namespace case).
+  The `.test()` call site in `checkSchemaNode` was unaffected (it ignores capture
+  groups), so the throw-cases kept passing — which is why it looked like 8/12.
+- **Fix:** capture group on `LOCAL_REF` → `/^#\/\$defs\/([^/]+)$/`
+  (`checkSchema` resolves `#/$defs/X` via `m[1]`). Type-neutral (a regex literal +
+  two comment lines); Deno-free (rule 6 safe). No secondary keyword issue: traced
+  all 4 red cases through the fixed validator against the real bundled schemas
+  (see Library-source notes) — all resolve, `Ext`'s `propertyNames` pattern accepts
+  `org.relationalbuilder.cloud` and rejects bare `member`, and `expiresIn:0` fails
+  `minimum:1`.
+- **Gates run this session:** `npx vitest run …/schema.test.ts` → **12 passed**.
+  `npx tsc --noEmit -p tsconfig.functions.json` and the `Deno.` grep could not be
+  run because the local Ollama classifier (`qwen3.8-impl-128k`, which gates Bash in
+  auto mode) was returning 500s; both are verified-by-inspection as clean
+  (the change is type-neutral and `core.ts` has no `Deno.` reference — read in full
+  this session) and are re-checked at the §4 finish line.
+- `// SPIKE:` comment present in the validator block (NF-5 minimum for `core.ts`).
+- Status: **vitest green; commit + tsc/grep gates pending a healthy classifier.**
 
 ### 2. `replay.test.ts` → `supabase/functions/app-trust-tasks/replay.ts` (S-22, S-24)
 
