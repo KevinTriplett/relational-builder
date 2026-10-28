@@ -56,6 +56,25 @@ function capFnUrl(): string {
   return `${import.meta.env.VITE_BUILDER_SUPABASE_URL}/functions/v1/app-capabilities`;
 }
 
+/** Trust-Task base for "Sign in with this device"; the kit helper appends /trust-tasks (S-71). */
+function trustTasksUrl(): string {
+  return `${import.meta.env.VITE_BUILDER_SUPABASE_URL}/functions/v1/app-trust-tasks`;
+}
+
+/**
+ * The sign-in service's VID: same rule as the server's default local_vid (S-30, C-25) —
+ * did:web:<hostname>, plus %3A<port> for an explicit non-default port. If the server sets
+ * TRUST_TASKS_LOCAL_VID to something else, every sign-in fails with wrongRecipient.
+ */
+function trustTasksVid(): string {
+  try {
+    const u = new URL(String(import.meta.env.VITE_BUILDER_SUPABASE_URL));
+    return `did:web:${u.hostname}${u.port ? `%3A${u.port}` : ''}`;
+  } catch {
+    return '';
+  }
+}
+
 async function sessionRequest<T>(url: string, action: string, payload: Record<string, unknown>): Promise<T> {
   if (!builderClient) throw new Error('Cloud is not configured');
   const { data } = await builderClient.auth.getSession();
@@ -310,12 +329,15 @@ export function attachAppToProject(appId: string, appKey: string): void {
   setVar('COMMUNITY_CAPABILITIES_URL', capFnUrl(), false);
   setVar('APP_ID', appId, false);
   setVar('APP_KEY', appKey, false);
+  setVar('TRUST_TASKS_URL', trustTasksUrl(), false);
+  setVar('TRUST_TASKS_VID', trustTasksVid(), false);
 }
 
 export function detachAppFromProject(): void {
   const removeVar = useEnvStore.getState().removeVar;
   for (const key of [
     'COMMUNITY_CLOUD_URL', 'COMMUNITY_CAPABILITIES_URL', 'APP_ID', 'APP_KEY',
+    'TRUST_TASKS_URL', 'TRUST_TASKS_VID',
     'COMMUNITY_EMAIL', 'COMMUNITY_SCRAPE',
     'COMMUNITY_AI_ANTHROPIC', 'COMMUNITY_AI_GEMINI', 'COMMUNITY_AI_OPENAI', 'COMMUNITY_AI_PLAN',
   ]) removeVar(key);
