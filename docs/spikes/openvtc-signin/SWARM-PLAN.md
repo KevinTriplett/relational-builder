@@ -84,6 +84,7 @@ Phase 5  Orchestrator + human: manual wallet trial, FINDINGS.md
 **Gate G2:**
 - `COVERAGE.md` has a row for every requirement id (orchestrator greps spec ids vs. coverage ids; the sets must match).
 - `npx vitest run` shows ≥ 1 failing test per `covered` row of the core/store/resolver/signer tables, and no test that passes only because stubs throw (grep for `.toThrow()` on `"not implemented"` — none allowed).
+- Every test can go green: test helpers that parse or transform (regexes, strippers) have been run against concrete inputs, and each snapshot/format test has been shown to pass against a hand-written reference input. (Added after D-1 in Phase 3: a greedy regex in `stripDid` made two tests unsatisfiable alongside a third, hidden until implementation because every test was red by design.)
 - `## Spec ambiguities`, if non-empty, goes back to D for a Changelog entry **before** Phase 3. T then updates affected tests. Loop at most twice; after that, the orchestrator decides.
 
 ### Phase 3 — Implement (agent I)
