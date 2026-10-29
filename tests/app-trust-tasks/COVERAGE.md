@@ -1,7 +1,7 @@
 # app-trust-tasks — test coverage matrix
 
 Written by the Phase 2 test agent from `SPIKE-SPEC.md` (as amended, Changelog C-1…C-24) and
-`DESIGN.md` §2–§3 only; updated for the REVIEW-1 amendments (C-37…C-52, DESIGN §6). Run: `npx vitest run`. Type-check: `npx tsc --noEmit -p tests/tsconfig.json`.
+`DESIGN.md` §2–§3 only; updated for the REVIEW-1 amendments (C-37…C-52, DESIGN §6) and the REVIEW-2 amendments (C-53…C-59). Run: `npx vitest run`. Type-check: `npx tsc --noEmit -p tests/tsconfig.json`.
 
 Every suite goes through `fake-postgrest.ts` (DESIGN §3, P1–P13). The fake records any unmodelled
 call as a contract violation; `helpers.ts` fails every test whose code under test made one (S-12),
@@ -65,6 +65,14 @@ Status: `covered`, `partial` (what is missing), `not testable here` (why).
 | C-50 | — | — | not testable here — FINDINGS.md content (§9 items 4 and 6) is the orchestrator's / reviewer's check, not a code property. |
 | C-51 | kit.test.ts | see S-63 (`C-51 …`, 3 tests) | covered |
 | C-52 | producer-helper.fixture.test.ts | `C-52 a 200 challenge response with threadId ≠ the request id → …, and no second POST`; `C-52 a 200 challenge response typed as the authenticate #response → …`; `C-52 an authenticate 200 typed as the challenge #response → …, and member_token is not written`; `C-52 an authenticate 200 whose threadId ≠ the authenticate request id → …` | covered |
+| C-53 | core.authenticate.test.ts; nonfunctional.test.ts | existing `S-44 first failure wins: expired AND mismatched → challengeExpired` and `S-44 a retryable refusal (challengeExpired) releases the claim: the identical resend is re-executed and gets challengeNotFound`; the `expiry before mismatch` phrase in `NF-5 / C-49 …` | covered (text correction; no behaviour change) |
+| C-54 | core.auth.test.ts; nonfunctional.test.ts | `C-54 120 requests with the right app_id and a wrong app_key (each 403), then one with the right key in the same window → 429`; `C-54 the rate-limiter // SPIKE: line names per-app, rateLimited and app_id, and no longer says APP_KEY`; `app_id` added to the rate-limiter phrase in `NF-5 / C-49 / C-54 / C-55 …` | covered (the oracle pins today's S-40 order and already passes; the marker tests fail until I rewords it) |
+| C-55 | schema.test.ts; core.authenticate.test.ts; nonfunctional.test.ts | `C-55 validate({type:"string",format:"date-time"}, <v>) is false` (13) / `is true` (6); `C-55 issuedAt <v>, with the clock at the instant Date.parse reads it as → 400 …` (3); `C-55 issuedAt 2031-03-04T23:59:60Z (a leap second) → 400 … from the shape check …`; `C-55 core.ts has a // SPIKE: line containing "leap second", and at least 10 // SPIKE: lines`; core minimum raised 9 → 10 in `NF-5 …` | covered |
+| C-56 | core.authenticate.test.ts | `C-56 authenticateChecks keeps requireIssuedAt: true …`; `C-56 issuedAt = T, no expiresAt, completes at T; the identical resend at T + window + 60 000 … challengeNotFound; still one session`; `C-56 the same resend at T + window + 60 001 → 422 expired, with zero P3 and P5` | covered (known behaviour pinned, no code change; all three pass today) |
+| C-57 | core.auth.test.ts | `C-57 with a fixed now, 20 000 distinct ids leave the map at ≤ 10 000 entries; …`; `C-57 an id hit 121 times in one window …`; `C-57 the self-check: bucketsOf finds the one Map …` | partial — "no full scan / O(1) amortized" is not asserted (a timing test would be flaky); the bound, the survivor and the count are |
+| C-58 | schema.test.ts | `C-58 <schema> makes assertSchemaSupported throw a controlled error naming the keyword (not a TypeError)` (11); `C-58 <schema> makes validate throw for every value: never a TypeError, never true` (11); `C-58 the typed-value rules still accept … both pinned tasks, and well-typed values`; C-41 matcher tightened to `unsupported schema keyword "<k>"` (R2-8) | covered |
+| C-59 | replay.test.ts | `C-59 recordResponse failing twice logs replay.record_failed exactly once, {failure} only …`; `C-59 recordResponse failing once logs nothing`; `C-59 a throwing log sink is swallowed …`; `C-59 end to end: P9 failing twice → log called exactly once …; the first answer is still 200; the identical resend gets 202` | covered |
+| R2-8 | schema.test.ts; nonfunctional.test.ts | C-41 tests assert the exact `unsupported schema keyword "<k>"` text (assert and validate); `C-38 the helper's header comment … R2-8: no unqualified "never leaves" sentence`, with the matcher run on concrete inputs in `C-49 / C-38 (G2 self-check) …` | covered (passes today: I's header and message already comply) |
 
 ## Spec ambiguities
 
@@ -97,3 +105,14 @@ None blocks a test. Readings taken, so I and D can check them:
 6. **C-43 message.** "A constant message naming the member": the tests assert the wire message contains `issuedAt`, `expiresAt` or `parentThreadId` as applicable.
 7. **C-42 on a challenge.** The P-256 challenge is subject-agnostic (`subject` omitted), so the 422 can only come from the proof check, not from S-43's `subjectNotRecognized`.
 8. **C-51 local type.** A local `TrustTaskDocument<P>` without the upstream index signature is not assignable to `@openvtc/trust-tasks`'s type. Two existing S-61 fixture lines now cast the helper's document to the upstream type (`as unknown as`), so `tsc` stays clean whichever exact shape I declares.
+
+## Spec ambiguities (REVIEW-2 loop)
+
+None blocks a test. Readings taken, so I and D can check them:
+
+1. **C-38 / R2-8 "without qualification".** This supersedes REVIEW-1 reading 5. A header *sentence* containing "never leaves" fails unless the same sentence mentions export, the same origin, or has a "but"/"except" clause. The current header ("cannot be exported and is never sent") passes.
+2. **C-58 "a constant message naming the keyword".** The test asserts the message contains the keyword's name (`items`, `properties`, `$defs`, `required`, `type`, `minLength`, `minItems`, `pattern`). The `unsupported schema keyword "<k>"` wording is required only for unsupported keywords. For `{items:[{enum:["a"]}]}` the throw must name `items` (array-form `items` is the fault), not `enum`. The tests also check `instanceof Error && !(instanceof TypeError)` and validate each schema against `[]`, `{}`, `"x"`, `1`, `null`, `true`, `{a:1}` and `["a"]`.
+3. **C-57 map inspection.** `MAX_BUCKETS` is not exported, so the test reads the bucket map as the limiter's only `Map`-valued own field (`bucketsOf`). It does not depend on the field's name, but a `#private` field would hide it. "Counts as its second" is observed with `new InMemoryRateLimiter(1)`: the latest id's second hit returns `true`. The 121st-hit test interleaves 6 050 other ids, fewer than `MAX_BUCKETS`.
+4. **C-55 end to end, "the instant each value denotes".** Read as `Date.parse(value)`, which is the instant the old check let through (`2031-02-31` → `03-03`, `04-31` → `05-01`, `T24:00` → next day `00:00`). `23:59:60Z` has no `Date.parse` instant, so the clock is set to `2031-03-05T00:00:00Z`.
+5. **C-59 `failure`.** The detail is asserted to be exactly `{failure}` (`"HTTP 503"` after two 503s, `"fetch rejected"` when the last attempt is rejected). That reads "the last failure" from the existing code, as the error text does.
+6. **C-56.** The oracle pins today's behaviour (no code change), so the C-56 tests pass now by design. The `requireIssuedAt: true` assertion is separate: the existing S-42 `toEqual` test implies it only through `CONSEQUENTIAL_FRESHNESS`.

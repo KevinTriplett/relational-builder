@@ -10,7 +10,8 @@ import {
   type TrustTaskDocument,
 } from '@openvtc/trust-tasks';
 import { DEFAULT_RETENTION_PAD_MS, PostgresReplayGuard } from '../../supabase/functions/app-trust-tasks/replay.ts';
-import { APP_A, APP_B, TestClock, makeFake, rejectionOf, settle } from './helpers.ts';
+import { APP_A, APP_B, TestClock, authDoc, getChallenge, makeEnv, makeFake, post, rejectionOf, settle } from './helpers.ts';
+import { mintDidKey } from './producer.ts';
 import type { ReplayRow } from './fake-postgrest.ts';
 
 function setup(appId = APP_A, retentionPadMs?: number) {
@@ -298,5 +299,61 @@ describe('release is total; recordResponse retries once (C-40)', () => {
     fake.script('P9', 503, 'reject');
     await rejectionOf(Promise.resolve().then(() => guard.recordResponse(ID, { r: 1 })));
     expect(fake.callsOf('P9')).toHaveLength(2);
+  });
+});
+
+describe('a twice-failed recordResponse is logged (C-59)', () => {
+  type LogEntry = { event: string; detail?: Record<string, unknown> };
+
+  it('C-59 recordResponse failing twice logs replay.record_failed exactly once, {failure} only ("HTTP <status>" / "fetch rejected"), naming no id or digest, then throws', async () => {
+    for (const [faults, failure] of [[[503, 503], 'HTTP 503'], [[503, 'reject'], 'fetch rejected']] as const) {
+      const logs: LogEntry[] = [];
+      const { clock, fake, guard } = guardWith({ log: (event, detail) => void logs.push({ event, detail }) });
+      await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+      fake.script('P9', ...faults);
+      await rejectionOf(Promise.resolve().then(() => guard.recordResponse(ID, { r: 1 })));
+      expect(fake.callsOf('P9')).toHaveLength(2);
+      const failed = logs.filter((l) => l.event === 'replay.record_failed');
+      expect(failed, String(faults)).toHaveLength(1);
+      expect(failed[0].detail).toEqual({ failure });
+      expect(JSON.stringify(logs)).not.toContain(ID);
+      expect(JSON.stringify(logs)).not.toContain(D1);
+    }
+  });
+
+  it('C-59 recordResponse failing once logs nothing', async () => {
+    const logs: LogEntry[] = [];
+    const { clock, fake, guard } = guardWith({ log: (event, detail) => void logs.push({ event, detail }) });
+    await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+    fake.script('P9', 503);
+    await expect(guard.recordResponse(ID, { r: 1 })).resolves.toBeUndefined();
+    expect(logs.filter((l) => l.event === 'replay.record_failed')).toHaveLength(0);
+  });
+
+  it('C-59 a throwing log sink is swallowed: recordResponse still throws its own error, and the sink was called', async () => {
+    let calls = 0;
+    const { clock, fake, guard } = guardWith({ log: (event) => { if (event === 'replay.record_failed') calls += 1; throw new Error('sink exploded'); } });
+    await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+    fake.script('P9', 503, 'reject');
+    const e = await rejectionOf(Promise.resolve().then(() => guard.recordResponse(ID, { r: 1 })));
+    expect(String((e as Error)?.message ?? e)).not.toContain('sink exploded');
+    expect(calls).toBe(1);
+  });
+
+  it('C-59 end to end: P9 failing twice → log called exactly once with replay.record_failed (no document id, no digest); the first answer is still 200; the identical resend gets 202', async () => {
+    const env = makeEnv();
+    const id = mintDidKey();
+    const c = await getChallenge(env, id);
+    env.fake.script('P9', 503, 'reject');
+    const d = authDoc(env, id, c);
+    const first = await post(env, d);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const failed = env.logs.filter((l) => l.event === 'replay.record_failed');
+    expect(failed).toHaveLength(1);
+    const detail = JSON.stringify(failed[0].detail ?? {});
+    expect(detail).not.toContain(d.id);
+    expect(detail).not.toContain(documentDigest(d));
+    expect((await post(env, d)).status).toBe(202);
+    expect(env.logs.filter((l) => l.event === 'replay.record_failed')).toHaveLength(1);
   });
 });

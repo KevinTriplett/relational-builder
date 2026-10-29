@@ -51,7 +51,7 @@ describe('non-functional', () => {
     }
   });
 
-  it('NF-5 / C-49 per-file // SPIKE: markers, each listed phrase on the same line as a // SPIKE: (core.ts ≥ 9, status.ts ≥ 1, replay.ts ≥ 1, index.ts ≥ 1, trust-signin.ts ≥ 2)', () => {
+  it('NF-5 / C-49 / C-54 / C-55 per-file // SPIKE: markers, each listed phrase on the same line as a // SPIKE: (core.ts ≥ 10, status.ts ≥ 1, replay.ts ≥ 1, index.ts ≥ 1, trust-signin.ts ≥ 2)', () => {
     const files = {
       core: read(`${FN}core.ts`),
       status: read(`${FN}status.ts`),
@@ -67,18 +67,19 @@ describe('non-functional', () => {
     need('core', 'consume-before-compare');
     need('core', 'unsigned', '#response');
     need('core', 'subset validator');
-    need('core', 'per-app', 'rateLimited');
+    need('core', 'per-app', 'rateLimited', 'app_id');
     need('core', 'expiry before mismatch');
     need('core', 'envelope');
     need('core', 'self-enrolment');
     need('core', 'audience');
+    need('core', 'leap second');
     need('status', 'retained error');
     need('replay', 'retention pad');
     need('index', 'OPTIONS');
     need('helper', 'software');
     need('helper', 'shared origin');
     expect(missing, 'C-49 phrases not found on a // SPIKE: line').toEqual([]);
-    const minimum: Record<keyof typeof files, number> = { core: 9, status: 1, replay: 1, index: 1, helper: 2 };
+    const minimum: Record<keyof typeof files, number> = { core: 10, status: 1, replay: 1, index: 1, helper: 2 };
     for (const [f, n] of Object.entries(minimum)) expect(spikeLines(files[f as keyof typeof files]).length, f).toBeGreaterThanOrEqual(n);
   });
 
@@ -86,11 +87,26 @@ describe('non-functional', () => {
     expect(markerAtKeyStorage(read(HELPER))).toBe(true);
   });
 
-  it('C-38 the helper\'s header comment no longer says, without qualification, that the private key never leaves the device: it says the key cannot be exported and that any script on the same origin can use it', () => {
+  it('C-38 the helper\'s header comment no longer says, without qualification, that the private key never leaves the device: it says the key cannot be exported and that any script on the same origin can use it; R2-8: no unqualified "never leaves" sentence', () => {
     const header = headerComment(read(HELPER));
     expect(header.length).toBeGreaterThan(0);
     expect(header).toMatch(/export/i);
     expect(header).toMatch(/same[- ]origin/i);
+    // R2-8: the unqualified claim is gone (S-60 / C-38 wording).
+    expect(unqualifiedNeverLeaves(header), 'a header sentence says "never leaves" with no qualifier').toEqual([]);
+  });
+
+  it('C-54 the rate-limiter // SPIKE: line names per-app, rateLimited and app_id, and no longer says APP_KEY', () => {
+    const lines = spikeLines(read(`${FN}core.ts`)).filter((l) => l.includes('per-app') && l.includes('rateLimited'));
+    expect(lines.length, 'a // SPIKE: line with per-app + rateLimited').toBeGreaterThan(0);
+    expect(lines.some((l) => l.includes('app_id')), 'the rate-limiter marker names app_id').toBe(true);
+    for (const l of lines) expect(l).not.toContain('APP_KEY');
+  });
+
+  it('C-55 core.ts has a // SPIKE: line containing "leap second", and at least 10 // SPIKE: lines', () => {
+    const core = read(`${FN}core.ts`);
+    expect(hasMarker(core, 'leap second')).toBe(true);
+    expect(spikeLines(core).length).toBeGreaterThanOrEqual(10);
   });
 
   it('C-49 / C-38 (G2 self-check) the marker matchers on concrete inputs', () => {
@@ -117,6 +133,15 @@ describe('non-functional', () => {
     expect(hasMarker(src, 'does not count')).toBe(false);
     expect(headerComment(src)).toMatch(/same origin/);
     expect(headerComment(src)).not.toMatch(/SPIKE/);
+    expect(unqualifiedNeverLeaves(headerComment(src))).toEqual([]);
+    expect(unqualifiedNeverLeaves(headerComment('// The private key never leaves this device.\nconst x = 1;'))).toHaveLength(1);
+    expect(unqualifiedNeverLeaves(headerComment('// The private key never\n//   leaves this device. Signatures do.\nconst x = 1;'))).toHaveLength(1);
+    expect(unqualifiedNeverLeaves('// The key never leaves the device in exportable form, but any same-origin script can use it.')).toEqual([]);
+    expect(unqualifiedNeverLeaves('// It cannot be exported. The key never leaves the device.')).toHaveLength(1);
+    const limiter = '// SPIKE: per-app limiter, never auth/challenge:rateLimited; anyone who knows an app_id can spend its budget';
+    expect(hasMarker(limiter, 'per-app', 'rateLimited', 'app_id')).toBe(true);
+    expect(hasMarker('// SPIKE: per-app rateLimited; any APP_KEY holder', 'per-app', 'rateLimited', 'app_id')).toBe(false);
+    expect(hasMarker('// SPIKE: leap seconds (ss = 60) refused', 'leap second')).toBe(true);
     expect(markerAtKeyStorage(src)).toBe(true);
     const abovePut = src.replace('// SPIKE: shared origin — every hosted app can use this key', '// nothing').replace('// SPIKE: software custody', '// SPIKE: shared origin, software custody');
     expect(markerAtKeyStorage(abovePut)).toBe(true);
@@ -141,6 +166,19 @@ function headerComment(src: string): string {
     out.push(l);
   }
   return out.join('\n');
+}
+/** A `//` comment block as one line of prose (comment markers and line breaks folded to spaces). */
+function flatComment(block: string): string {
+  return block.split('\n').map((l) => l.replace(/^\s*\/\/\s?/, '')).join(' ');
+}
+/**
+ * R2-8 / C-38: header sentences that claim the key "never leaves" the device with no qualifier
+ * in the same sentence (a mention of export, the same origin, or a "but"/"except" clause).
+ */
+function unqualifiedNeverLeaves(header: string): string[] {
+  return flatComment(header)
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => /never\s+leaves/i.test(sentence) && !/export|same[- ]origin|\bbut\b|\bexcept\b/i.test(sentence));
 }
 /** C-38 placement: a `// SPIKE: … shared origin` line inside identityKeyForApp, or in the comment run directly above a `store.put(`. */
 function markerAtKeyStorage(src: string): boolean {

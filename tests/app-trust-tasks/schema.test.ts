@@ -7,6 +7,10 @@ import { thrownBy } from './helpers.ts';
 
 const SPECS = fileURLToPath(new URL('../../.spike-deps/dtgwg-trust-tasks-tf/specs/auth/', import.meta.url));
 
+function messageOf(e: unknown): string {
+  return String((e as Error)?.message ?? e);
+}
+
 function ok(schema: unknown, payload: unknown): boolean {
   const r = subsetSchemaValidator.validate(schema, payload);
   return typeof r === 'boolean' ? r : r.ok;
@@ -148,25 +152,28 @@ describe('subsetSchemaValidator / assertSchemaSupported (S-25)', () => {
 
 describe('the schema check walks every sub-schema and fails closed (C-41)', () => {
   it('C-41 an unsupported keyword under items, propertyNames, a schema-valued additionalProperties, or nested under properties.*.items makes assertSchemaSupported throw', () => {
-    const bad: Array<[string, unknown]> = [
-      ['items:{enum}', { type: 'array', items: { enum: ['a'] } }],
-      ['items:{oneOf}', { items: { oneOf: [{}] } }],
-      ['propertyNames:{const}', { propertyNames: { const: 'x' } }],
-      ['additionalProperties:{not}', { additionalProperties: { not: {} } }],
-      ['properties.a.items.anyOf', { properties: { a: { items: { anyOf: [] } } } }],
-      ['$defs.X.items.const (deep)', { $defs: { X: { type: 'array', items: { type: 'string', const: 'x' } } } }],
+    // R2-8 / C-58: the message carries `unsupported schema keyword "<k>"` with the exact keyword.
+    const bad: Array<[string, string, unknown]> = [
+      ['items:{enum}', 'enum', { type: 'array', items: { enum: ['a'] } }],
+      ['items:{oneOf}', 'oneOf', { items: { oneOf: [{}] } }],
+      ['propertyNames:{const}', 'const', { propertyNames: { const: 'x' } }],
+      ['additionalProperties:{not}', 'not', { additionalProperties: { not: {} } }],
+      ['properties.a.items.anyOf', 'anyOf', { properties: { a: { items: { anyOf: [] } } } }],
+      ['$defs.X.items.const (deep)', 'const', { $defs: { X: { type: 'array', items: { type: 'string', const: 'x' } } } }],
     ];
-    for (const [name, s] of bad) {
+    for (const [name, k, s] of bad) {
       const e = thrownBy(() => assertSchemaSupported(s));
-      expect(String((e as Error)?.message ?? e), name).toMatch(/enum|oneOf|const|not|anyOf/);
+      expect(messageOf(e), name).toContain(`unsupported schema keyword "${k}"`);
     }
   });
 
   it('C-41 the validator asserts the whole schema first: an unsupported keyword under items throws whatever the value (never true)', () => {
-    thrownBy(() => subsetSchemaValidator.validate({ type: 'array', items: { type: 'string', enum: ['a'] } }, ['zzz']));
-    thrownBy(() => subsetSchemaValidator.validate({ type: 'array', items: { type: 'string', enum: ['a'] } }, ['a']));
+    const enumMsg = 'unsupported schema keyword "enum"';
+    expect(messageOf(thrownBy(() => subsetSchemaValidator.validate({ type: 'array', items: { type: 'string', enum: ['a'] } }, ['zzz'])))).toContain(enumMsg);
+    expect(messageOf(thrownBy(() => subsetSchemaValidator.validate({ type: 'array', items: { type: 'string', enum: ['a'] } }, ['a'])))).toContain(enumMsg);
     // The value never reaches the nested keyword (not an array), and the validator must still throw.
-    thrownBy(() => subsetSchemaValidator.validate({ type: 'object', properties: { a: { items: { anyOf: [] } } } }, 'not-an-object'));
+    expect(messageOf(thrownBy(() => subsetSchemaValidator.validate({ type: 'object', properties: { a: { items: { anyOf: [] } } } }, 'not-an-object'))))
+      .toContain('unsupported schema keyword "anyOf"');
   });
 
   it('C-41 required and properties consider own properties only: required ["toString"] is not satisfied by {}', () => {
@@ -180,5 +187,79 @@ describe('the schema check walks every sub-schema and fails closed (C-41)', () =
 
   it('C-41 the request and response schemas of both pinned tasks still pass assertSchemaSupported', () => {
     for (const [name, s] of Object.entries(SCHEMAS)) expect(() => assertSchemaSupported(s), name).not.toThrow();
+  });
+});
+
+describe('date-time is fully range-checked (C-55)', () => {
+  const s = { type: 'string', format: 'date-time' };
+  const refused = [
+    '2031-02-31T00:00:00Z', '2031-04-31T00:00:00Z', '2031-02-29T00:00:00Z', '2100-02-29T00:00:00Z',
+    '2031-00-10T00:00:00Z', '2031-03-00T00:00:00Z',
+    '2031-03-04T24:00:00Z', '2031-03-04T25:00:00Z', '2031-03-04T05:60:00Z', '2031-03-04T23:59:60Z',
+    '2031-03-04T05:06:07+24:00', '2031-03-04T05:06:07+23:60', '2031-03-04T05:06:07+99:99',
+  ];
+  const accepted = [
+    '2032-02-29T00:00:00Z', '2000-02-29T00:00:00Z', '2031-03-04t05:06:07z',
+    '2031-03-04T05:06:07.123456789Z', '2031-03-04T05:06:07-00:00', '2031-03-04T05:06:07+23:59',
+  ];
+
+  it.each(refused)('C-55 validate({type:"string",format:"date-time"}, %s) is false', (v) => {
+    expect(ok(s, v)).toBe(false);
+  });
+
+  it.each(accepted)('C-55 validate({type:"string",format:"date-time"}, %s) is true', (v) => {
+    expect(ok(s, v)).toBe(true);
+  });
+});
+
+describe('schema positions and keyword values are type-checked (C-58)', () => {
+  // [label, schema, the keyword the controlled throw must name, values to validate against]
+  const VALUES: unknown[] = [[], {}, 'x', 1, null, true, { a: 1 }, ['a']];
+  const cases: Array<[string, Record<string, unknown>, string, unknown[]]> = [
+    ['{items:[{enum:["a"]}]}', { items: [{ enum: ['a'] }] }, 'items', [[], ...VALUES]],
+    ['{items:[{}]}', { items: [{}] }, 'items', VALUES],
+    ['{properties:[]}', { properties: [] }, 'properties', VALUES],
+    ['{$defs:[]}', { $defs: [] }, '$defs', VALUES],
+    ['{properties:{a:7}}', { properties: { a: 7 } }, 'properties', VALUES],
+    ['{required:"a"}', { required: 'a' }, 'required', VALUES],
+    ['{type:["string","null"]}', { type: ['string', 'null'] }, 'type', VALUES],
+    ['{type:"date"}', { type: 'date' }, 'type', VALUES],
+    ['{minLength:-1}', { minLength: -1 }, 'minLength', VALUES],
+    ['{minItems:1.5}', { minItems: 1.5 }, 'minItems', VALUES],
+    ['{pattern:7}', { pattern: 7 }, 'pattern', VALUES],
+  ];
+
+  it.each(cases)('C-58 %s makes assertSchemaSupported throw a controlled error naming the keyword (not a TypeError)', (_label, schema, keyword) => {
+    const e = thrownBy(() => assertSchemaSupported(schema));
+    expect(e).toBeInstanceOf(Error);
+    expect(e).not.toBeInstanceOf(TypeError);
+    expect(messageOf(e)).toContain(keyword);
+  });
+
+  it.each(cases)('C-58 %s makes validate throw for every value: never a TypeError, never true', (_label, schema, keyword, values) => {
+    for (const v of values) {
+      let threw = false;
+      let result: unknown;
+      let err: unknown;
+      try {
+        result = subsetSchemaValidator.validate(schema, v);
+      } catch (e) {
+        threw = true;
+        err = e;
+      }
+      expect({ threw, result }, `validate(${JSON.stringify(schema)}, ${JSON.stringify(v)})`).toEqual({ threw: true, result: undefined });
+      expect(err, JSON.stringify(v)).not.toBeInstanceOf(TypeError);
+      expect(messageOf(err), JSON.stringify(v)).toContain(keyword);
+    }
+  });
+
+  it('C-58 the typed-value rules still accept the request and response schemas of both pinned tasks, and well-typed values', () => {
+    for (const [name, sch] of Object.entries(SCHEMAS)) expect(() => assertSchemaSupported(sch), name).not.toThrow();
+    const good = {
+      type: 'object', required: ['a'], minProperties: 0, additionalProperties: false,
+      properties: { a: { type: 'array', items: { type: 'string', minLength: 0, maxLength: 3, pattern: '^a', format: 'date-time' }, minItems: 0 }, b: true, n: { type: 'integer', minimum: -1.5 } },
+      $defs: { X: { type: 'null' }, Y: false }, propertyNames: { type: 'string' },
+    };
+    expect(() => assertSchemaSupported(good)).not.toThrow();
   });
 });

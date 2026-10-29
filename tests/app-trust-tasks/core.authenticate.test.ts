@@ -672,6 +672,88 @@ describe('envelope timestamps must be RFC 3339; parentThreadId a string (C-43)',
   });
 });
 
+describe('envelope date-time range checks end to end (C-55)', () => {
+  /** Set the clock to `at`, take a challenge, and send an authenticate whose issuedAt is the literal `issuedAt`. */
+  async function sendWithIssuedAt(issuedAt: string, at: number) {
+    const env = makeEnv();
+    env.clock.ms = at;
+    const id = mintDidKey();
+    const c = await getChallenge(env, id);
+    const p3Before = env.fake.callsOf('P3').length;
+    const bare = unsignedAuthenticateDoc(id.did, { id: crypto.randomUUID(), now: env.clock.now(), recipient: LOCAL_VID, ...c, issuedAt });
+    const d = signAs(bare, id, { proofPurpose: 'authentication', created: env.clock.now() });
+    const res = await post(env, d);
+    return { env, res, p3: env.fake.callsOf('P3').length - p3Before };
+  }
+
+  it.each([
+    ['2031-02-31T05:06:07Z'],
+    ['2031-04-31T05:06:07Z'],
+    ['2031-03-04T24:00:00Z'],
+  ])('C-55 issuedAt %s, with the clock at the instant Date.parse reads it as → 400 malformedRequest naming issuedAt; zero P3 and P5; no session', async (v) => {
+    const at = Date.parse(v);
+    expect(Number.isNaN(at), 'Date.parse rolls the impossible value over to a real instant').toBe(false);
+    const { env, res, p3 } = await sendWithIssuedAt(v, at);
+    const err = expectError(res, 400, 'malformedRequest', false);
+    expect(err.payload.message ?? '').toContain('issuedAt');
+    expect(p3).toBe(0);
+    expect(env.fake.callsOf('P5')).toHaveLength(0);
+    expect(sessionCount(env)).toBe(0);
+  });
+
+  it('C-55 issuedAt 2031-03-04T23:59:60Z (a leap second) → 400 malformedRequest from the shape check: names issuedAt, not the runtime\'s "not a valid RFC 3339 timestamp"; zero P3 and P5', async () => {
+    expect(Number.isNaN(Date.parse('2031-03-04T23:59:60Z'))).toBe(true);
+    const { env, res, p3 } = await sendWithIssuedAt('2031-03-04T23:59:60Z', Date.parse('2031-03-05T00:00:00Z'));
+    const err = expectError(res, 400, 'malformedRequest', false);
+    expect(err.payload.message ?? '').toContain('issuedAt');
+    expect(err.payload.message ?? '').not.toContain('not a valid RFC 3339 timestamp');
+    expect(p3).toBe(0);
+    expect(env.fake.callsOf('P5')).toHaveLength(0);
+    expect(sessionCount(env)).toBe(0);
+  });
+});
+
+describe('the boundary millisecond and its mitigation (C-56)', () => {
+  it('C-56 authenticateChecks keeps requireIssuedAt: true (the retention cap depends on it)', () => {
+    const guard: ReplayGuard = { claim: () => ({ kind: 'fresh' }) };
+    expect(authenticateChecks(guard, DEFAULT_ACCEPTANCE_WINDOW_MS).freshness?.requireIssuedAt).toBe(true);
+  });
+
+  async function completeAtT() {
+    const env = makeEnv();
+    const T = env.clock.ms;
+    const id = mintDidKey();
+    const c = await getChallenge(env, id);
+    const d = authDoc(env, id, c, { issuedAt: new Date(T).toISOString(), created: new Date(T) });
+    expect(d.expiresAt).toBeUndefined();
+    const first = await post(env, d);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(sessionCount(env)).toBe(1);
+    return { env, T, d };
+  }
+
+  it('C-56 issuedAt = T, no expiresAt, completes at T; the identical resend at T + window + 60 000 re-runs the handler (one more P3) and gets 422 challengeNotFound; still one session', async () => {
+    const { env, T, d } = await completeAtT();
+    const p3 = env.fake.callsOf('P3').length;
+    env.clock.ms = T + DEFAULT_ACCEPTANCE_WINDOW_MS + 60_000;
+    const again = await post(env, d);
+    expectError(again, 422, 'auth/authenticate:challengeNotFound');
+    expect(env.fake.callsOf('P3')).toHaveLength(p3 + 1);
+    expect(sessionCount(env)).toBe(1);
+  });
+
+  it('C-56 the same resend at T + window + 60 001 → 422 expired, with zero P3 and P5', async () => {
+    const { env, T, d } = await completeAtT();
+    const p3 = env.fake.callsOf('P3').length;
+    const p5 = env.fake.callsOf('P5').length;
+    env.clock.ms = T + DEFAULT_ACCEPTANCE_WINDOW_MS + 60_001;
+    expectError(await post(env, d), 422, 'expired');
+    expect(env.fake.callsOf('P3')).toHaveLength(p3);
+    expect(env.fake.callsOf('P5')).toHaveLength(p5);
+    expect(sessionCount(env)).toBe(1);
+  });
+});
+
 describe('replay retention cap and release/record failures end to end (C-39, C-40)', () => {
   it('C-39 oracle 2: an authenticate with expiresAt "9999-12-31T23:59:59Z" completes; P5 until_at ≤ now + window + 120 s, a plain YYYY-…Z string', async () => {
     const env = makeEnv();

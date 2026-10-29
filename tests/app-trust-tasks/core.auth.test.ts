@@ -106,6 +106,65 @@ describe('app authentication precedes parsing (S-40)', () => {
   });
 });
 
+describe('the rate limit is spent by app_id alone (C-54)', () => {
+  it('C-54 120 requests with the right app_id and a wrong app_key (each 403), then one with the right key in the same window → 429', async () => {
+    const env = makeEnv();
+    env.deps.rateLimiter = new InMemoryRateLimiter();
+    for (let i = 0; i < 120; i++) {
+      const res = await handleTrustTask(env.deps, { appId: APP_A, appKey: 'wrong-key', rawBody: chDoc(env) });
+      expect(res, `request ${i + 1}`).toEqual({ status: 403, body: { error: 'Unknown app or wrong key' } });
+      env.clock.advance(100);
+    }
+    const p1 = env.fake.callsOf('P1').length;
+    const res = await handleTrustTask(env.deps, { appId: APP_A, appKey: KEY_A, rawBody: chDoc(env) });
+    expect(res).toEqual({ status: 429, body: { error: 'Rate limit exceeded — try again in a minute' } });
+    expect(env.fake.callsOf('P1')).toHaveLength(p1);
+  });
+});
+
+/** The limiter's bucket map, found by type so the test does not depend on the field's name (C-57). */
+function bucketsOf(rl: InMemoryRateLimiter): Map<string, unknown> {
+  const maps = Object.values(rl as unknown as Record<string, unknown>).filter((v): v is Map<string, unknown> => v instanceof Map);
+  expect(maps, 'InMemoryRateLimiter keeps exactly one Map-valued field (its buckets)').toHaveLength(1);
+  return maps[0];
+}
+
+describe('the rate limiter\'s memory is bounded (C-57)', () => {
+  const MAX_BUCKETS = 10_000;
+
+  it('C-57 with a fixed now, 20 000 distinct ids leave the map at ≤ 10 000 entries; the latest id is present and its next hit counts as its second', () => {
+    const rl = new InMemoryRateLimiter(1); // limit 1: a second hit in the window returns true
+    const now = 5_000_000;
+    let last = '';
+    for (let i = 0; i < 20_000; i++) {
+      last = `app-${i}`;
+      expect(rl.hit(last, now)).toBe(false);
+    }
+    const buckets = bucketsOf(rl);
+    expect(buckets.size).toBeLessThanOrEqual(MAX_BUCKETS);
+    expect(buckets.has(last)).toBe(true);
+    expect(rl.hit(last, now), 'the latest id\'s next hit is its second (over a limit of 1)').toBe(true);
+  });
+
+  it('C-57 an id hit 121 times in one window (with fewer than MAX_BUCKETS other ids in between) → the 121st returns true', () => {
+    const rl = new InMemoryRateLimiter();
+    const now = 7_000_000;
+    const results: boolean[] = [];
+    for (let i = 0; i < 121; i++) {
+      results.push(rl.hit('busy-app', now));
+      for (let j = 0; j < 50; j++) rl.hit(`other-${i}-${j}`, now); // 6 050 other ids in total
+    }
+    expect(results.slice(0, 120).every((r) => r === false)).toBe(true);
+    expect(results[120]).toBe(true);
+    expect(bucketsOf(rl).size).toBeLessThanOrEqual(MAX_BUCKETS);
+  });
+
+  it('C-57 the self-check: bucketsOf finds the one Map on a concrete object', () => {
+    const fakeLimiter = { limit: 3, buckets: new Map([['a', 1]]) } as unknown as InMemoryRateLimiter;
+    expect(bucketsOf(fakeLimiter).get('a')).toBe(1);
+  });
+});
+
 describe('parse and dispatch (S-41)', () => {
   it('S-41 unparseable or non-object bodies → 400 malformedRequest trust-task-error (issuer = localVid)', async () => {
     for (const raw of [undefined, 'not json', null, 42, [], [{ type: CHALLENGE_TYPE }], {}, { type: 7 }]) {
