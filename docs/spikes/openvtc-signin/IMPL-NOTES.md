@@ -237,9 +237,12 @@ prefixes dropped; optional parameters given their documented defaults).
     null → `duplicate{inFlight:true}`; same digest + response set →
     `duplicate{inFlight:false, priorResponse}`.
   - `recordResponse`: P9 PATCH `?doc_id=eq.&app_id=eq.` body `{response}`, `return=minimal`;
-    throws on non-2xx. `release`: P10 DELETE
-    `?doc_id=eq.&app_id=eq.&digest=eq.&response=is.null` (best-effort; scoped to this
-    app's in-flight record only, so a completed record is never released).
+    retried once on a rejection or non-2xx, then throws (C-40). `release`: P10 DELETE
+    `?doc_id=eq.&app_id=eq.&digest=eq.&response=is.null`, scoped to this app's in-flight
+    record only, so a completed record is never released. *(Corrected in the REVIEW-1
+    loop: this said "best-effort", but before C-40 `release` awaited the fetch and a
+    rejection propagated — it was not best-effort. Since C-40 it is total: one P10, a
+    failure is logged as `replay.release_failed {status}` and `release` resolves.)*
   - P8 sweep deletes `until_at < now` (strict); fire-and-forget (`.catch(()=>{})`),
     a failed sweep must not fail the claim. P7 deletes `until_at <= now` (inclusive).
   - `// SPIKE:` is mandatory for `replay.ts` (NF-5 minimum ≥1); the others
@@ -428,3 +431,105 @@ index d4bb59e..59dafd3 100644
  /** Resolve the signed-in builder's email from the Authorization header */
 ```
 
+
+## REVIEW-1 loop
+
+Implementation agent, 2026-10-28. Starting point: commit 3d90825 (42 failed, 185 passed, 6 todo). Code commit: `ba6d745`. No TEST-DISPUTE entries were needed: every failing test matched its C-entry.
+
+### Per C-number
+
+- **C-37** (`trust-signin.ts`). `IDENTITY_KEY` removed; `IDENTITY_KEY_PREFIX = 'rb.trust-signin.identity.v2:'` and `identityKeyForApp(appId)` added (trims, lower-cases, throws `TrustSignInError('invalidAppId', false, 0)` for a non-string or blank id). `getOrCreateIdentity(options)` computes the key before touching the store and uses only that key for `get` and `put`. `signIn` calls `getOrCreateIdentity({ appId, store: options.identityStore })` when no `identity` is passed. The source no longer names the v1 key anywhere.
+- **C-38**. `// SPIKE: shared origin …` sits inside `identityKeyForApp`. The header comment now says the key cannot be exported and is never sent, but any same-origin script can use it. The `DeviceIdentity` doc comment no longer says "never leaves the device"; it says VTI-CLT-006 holds only against other origins.
+- **C-39** (`replay.ts`). `until_at = min(retainUntil + pad, now + acceptanceWindowMs + 2·DEFAULT_SKEW_MS)`, with `now` being `claim`'s argument. `ReplayGuardDeps.acceptanceWindowMs?` defaults to `DEFAULT_ACCEPTANCE_WINDOW_MS`. `core.ts` computes the window once and passes it to both the guard and `authenticateChecks`. `DEFAULT_ACCEPTANCE_WINDOW_MS` is now *defined* in `replay.ts` and re-exported unchanged from `core.ts`: `replay.ts` only imports types from `core.ts`, and this keeps it that way (no value import cycle). Its value and the `core.ts` export are unchanged.
+- **C-40** (`replay.ts`). `release` issues P10 once; a rejection or non-2xx calls `deps.log?.('replay.release_failed', { status })` (`status` is `null` for a rejected fetch; no id or digest), and `release` resolves. A throwing log sink is swallowed too. `recordResponse` retries P9 once, then throws. `core.ts` passes `deps.log`. The "best-effort" wording in the replay notes above is corrected.
+- **C-41** (`core.ts`). `checkSchemaNode` treats `items`, `propertyNames` and `additionalProperties` as single sub-schemas (the old code iterated `Object.values` of `items`/`propertyNames`, so `items: {enum: …}` was walked as a map and its keyword missed), and `properties`/`$defs` as maps, at any depth. `validate` already asserted first; it now catches nested keywords. `required` and the `properties` lookup use `Object.hasOwn`.
+- **C-42** (`core.ts`). `DataIntegrityProofVerifier({ now, cryptosuites: ["eddsa-jcs-2022"] })`, wrapped in a new private `DidKeyMethodVerifier` (not exported) that requires `issuer` to be a `did:key` and `proof.verificationMethod === issuer + "#" + issuer.slice(8)` before delegating. Chain: `PurposeCheckingVerifier(DidKeyMethodVerifier(DataIntegrityProofVerifier))`, for both tasks. `PurposeCheckingVerifier` is unchanged.
+- **C-43** (`core.ts`). `checkFrameworkShape` requires a string `parentThreadId` when present and applies the existing `isDateTime` to `issuedAt`/`expiresAt`, with the constant message `"<member> is not an RFC 3339 date-time"`. Marker `// SPIKE: envelope checks not done …` at the top of the function.
+- **C-44, C-46, C-47, C-48** (`core.ts`). Markers: `expiry before mismatch` above the `expired` → `challengeExpired` line; the rate-limiter marker now contains `per-app` and `rateLimited`; `self-enrolment` above `upsertMemberByDid`; `audience … wrongRecipient` above `myVid: deps.localVid` in `runChallenge`, with a short pointer comment at the authenticate `myVid` line. No behaviour change.
+- **C-45** (`status.ts`). `unsupportedExtension` → 422. `// SPIKE: retained error …` at the duplicate-with-prior-response branch; the `suppressed` → 400 branch's comment became its own `// SPIKE:` line.
+- **C-49**. All phrases present; the per-file minimums are met (`nonfunctional.test.ts` green).
+- **C-50**. FINDINGS is not an I deliverable; nothing done here.
+- **C-51** (`trust-signin.ts`). The `@openvtc/trust-tasks` import is gone. The helper exports a local `TrustTaskDocument<P>` (`id`, `type`, optional `issuer`/`recipient`/`issuedAt`/`expiresAt`/`threadId`, `payload: P`, optional `proof`) and a `TrustTaskProof` interface with the six eddsa-jcs-2022 proof members (structurally the runtime's `Proof`).
+- **C-52** (`trust-signin.ts`). After each 200, `signIn` requires `body.type === request.type + "#response"` and `body.threadId === request.id`, else `TrustSignInError('transport', false, 200)`. The challenge check runs before the second POST, the authenticate check before `member_token` is written.
+
+### DESIGN §2 signature changes
+
+Exactly those listed in DESIGN §6, nothing else:
+- `trust-signin.ts`: `IDENTITY_KEY` removed; `IDENTITY_KEY_PREFIX` and `identityKeyForApp(appId: string): string` added; `GetIdentityOptions.appId: string` required; `getOrCreateIdentity(options: GetIdentityOptions)` (no default); `SignInOptions.identityStore?: IdentityStore`. Two extra *type* exports, `TrustTaskDocument<P>` and `TrustTaskProof` (C-51 asks for the local type; exporting it lets apps name the documents the exported functions return).
+- `replay.ts`: `ReplayGuardDeps.acceptanceWindowMs?` and `ReplayGuardDeps.log?` (additive). `DEFAULT_ACCEPTANCE_WINDOW_MS` is also exported from `replay.ts` now (same value, still exported from `core.ts`).
+
+### REVIEW-1 nits
+
+- **N-3 done.** `InMemoryRateLimiter` evicts every bucket whose 60 s window has closed once it holds `MAX_BUCKETS` (10 000) distinct ids and sees a new one. Limits within a window are unchanged.
+- **N-4 done.** `app_key` is compared with the existing `constantTimeEqual` (and must be a string).
+- **N-6 done.** The `replay.ts` header now says the P8 sweep is global (expired rows of every app), and the app-scoping note is a plain comment, not a `// SPIKE:` marker. The `retention pad` marker remains, so `replay.ts` still has ≥ 1.
+- **N-9 skipped.** D declined it (worst case = a lost identity, already covered by S-70).
+- **N-12 skipped.** It touches `index.ts` request handling (body limit, module-load env check); not cheap to make safe without tests, and D marked it optional.
+
+### Finish-line outputs (REVIEW-1 loop, §4)
+
+```
+$ npx vitest run
+ Test Files  13 passed (13)
+      Tests  227 passed | 6 todo (233)
+   Start at  20:09:49
+   Duration  718ms (import 74%, tests 16%, transform 7%, setup 2%, worker 1%)
+
+$ npx tsc --noEmit -p tsconfig.functions.json
+exit 0
+$ npx tsc --noEmit -p tsconfig.app.json
+exit 0
+$ npx eslint ...
+exit 0
+$ deno check
+Check supabase/functions/app-trust-tasks/index.ts
+exit 0
+$ deno eval
+ok
+exit 0
+$ grep Deno.
+exit 1
+$ git diff app-data
+diff --git a/supabase/functions/app-data/index.ts b/supabase/functions/app-data/index.ts
+index d4bb59e..59dafd3 100644
+--- a/supabase/functions/app-data/index.ts
++++ b/supabase/functions/app-data/index.ts
+@@ -335,8 +335,9 @@ Deno.serve(async (req: Request) => {
+ 
+ interface Member {
+   id: string;
+-  email: string;
++  email: string | null;
+   name: string | null;
++  did: string | null;
+ }
+ 
+ const CODE_TTL_MS = 10 * 60 * 1000;
+@@ -356,7 +357,7 @@ async function resolveMember(appId: string, tokenRaw: unknown): Promise<Member |
+   const sessions = res.ok ? await res.json() : [];
+   if (!sessions.length || new Date(sessions[0].expires_at) < new Date()) return null;
+   const memberRes = await fetch(
+-    restUrl(`/app_members?id=eq.${sessions[0].member_id}&select=id,email,name`),
++    restUrl(`/app_members?id=eq.${sessions[0].member_id}&select=id,email,name,did`),
+     { headers: svcHeaders() },
+   );
+   const members = memberRes.ok ? await memberRes.json() : [];
+@@ -587,7 +588,7 @@ async function authVerify(appId: string, body: Record<string, unknown>): Promise
+ 
+   // Upsert the member (name from the sign-in request wins when present)
+   const existingRes = await fetch(
+-    restUrl(`/app_members?app_id=eq.${encodeURIComponent(appId)}&email=eq.${encodeURIComponent(email)}&select=id,email,name`),
++    restUrl(`/app_members?app_id=eq.${encodeURIComponent(appId)}&email=eq.${encodeURIComponent(email)}&select=id,email,name,did`),
+     { headers: svcHeaders() },
+   );
+   const existing = existingRes.ok ? await existingRes.json() : [];
+@@ -625,7 +626,7 @@ async function authVerify(appId: string, body: Record<string, unknown>): Promise
+   });
+   if (!sessRes.ok) return json({ error: 'Could not start your session' }, 500);
+ 
+-  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name } });
++  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name, did: member.did } });
+ }
+ 
+ /** Resolve the signed-in builder's email from the Authorization header */
+```
