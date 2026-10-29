@@ -410,3 +410,36 @@ When `payloadPolicy.validate.validate` throws, its `e.message` is appended to th
 SPEC §4.7.3 lets a specification require a purpose. `auth/authenticate/0.3` requires `authentication` only for later session-key proofs (`specs/auth/authenticate/0.3/spec.md:140`). The login proof itself is left open, so a consumer accepts `assertionMethod`, `capabilityInvocation` and `capabilityDelegation` logins. Not probed beyond `core.authenticate.test.ts:203-210`, which shows `assertionMethod` → 200.
 
 **Fix.** State it in the task's `proofRequirement`, since the login proof *is* an authentication, and have the runtime enforce a spec-declared purpose.
+
+---
+
+## D response
+
+Design agent, 2026-10-28. The spec is amended by Changelog **C-37 to C-52** in `SPIKE-SPEC.md`. `DESIGN.md` §2 and §3 are updated in place, and the new §6 lists the changes. The only §2 signature changes are in the helper (C-37, C-51) and additive fields on `ReplayGuardDeps` (C-39, C-40).
+
+| Item | Covered by | Note |
+|---|---|---|
+| **R1-1** (blocker) | C-37, C-38, C-50 | Owner decision: per-app keys plus a recorded risk. The identity is keyed by `appId` (`rb.trust-signin.identity.v2:<appId>`), and no shared or default key remains. The S-60 VTI-CLT-006 claim is amended to "met only against other origins". `// SPIKE: … shared origin` is marked at the key-storage site. Enablement on the shared origin is for the trial only, and per-app origins are a production prerequisite in FINDINGS §9 items 4 and 6. |
+| R1-2 (I) | C-40 | Spec basis: `release` is total and logs. The P3+P10 failure → 503 `unavailable` oracle is normative. Also P9 gets one retry (N-11). |
+| R1-3 (I) | C-41 | Sub-schema positions are defined. The validator asserts the whole schema first (it fails closed), and `required` uses own properties (N-5). |
+| R1-4 (I) | C-42 | `cryptosuites: ["eddsa-jcs-2022"]` is normative, with the P-256 oracle. Added: the `verificationMethod` must be the `did:key`'s own (OVTC-46), because the check is cheap and the trial is more honest for it. |
+| **R1-5** | C-39 | `until_at = min(retainUntil + pad, now + window + 2·skew)`. The guard gets `acceptanceWindowMs`. |
+| **R1-6** L-4 | C-44 | Accepted deviation, with the marker `expiry before mismatch`. |
+| R1-6 L-10 (and L-11) | C-45 | Accepted (already R6), with the marker `retained error` in `status.ts`. |
+| R1-6 L-12 | C-46 | Accepted: per-app/per-isolate axis, plain 429, no `auth/challenge:rateLimited`, and the per-app budget DoS recorded. The rate-limiter marker must say `per-app` and `rateLimited`. |
+| R1-6 L-15 | C-43 | **Fixed:** `issuedAt`/`expiresAt` must be RFC 3339 with an offset, and `parentThreadId` must be a string. `ceremony`/`extCritical`/`type` syntax are accepted, with the marker `envelope`. |
+| R1-6 L-24 | C-47 | Accepted, added to §1.2, with the marker `self-enrolment` at `upsertMemberByDid`. |
+| R1-6 L-27 (and L-9) | C-48 | Accepted, added to §1.2 and §10 (Increment 2 needs its own app binding), with the marker `audience` at `myVid`, naming `wrongRecipient`. |
+| R1-6 (markers, FINDINGS) | C-49, C-50 | The NF-5 minimum is rewritten as grep-testable phrases. The FINDINGS §9 item 4 and item 6 lists are completed. |
+| R1-7 (T) | C-37..C-52 oracles | Every T item now has a spec basis. COVERAGE downgrades of S-25/S-42 need no spec change. |
+| N-1 | C-51 | The helper drops the `@openvtc/trust-tasks` import and uses a local type. |
+| N-2 | C-50 | Recorded in FINDINGS, with no code change: the pins are needed for esm.sh, and the prompt side effect is minor. |
+| N-3, N-4, N-12 | none | Implementation hygiene, with no spec rule involved. Optional for I. |
+| N-5 | C-41 | |
+| N-6 | none | The mislabelled marker is extra (NF-5 allows more). I may reword it. |
+| N-7 | C-45 | `unsupportedExtension` → 422. |
+| N-8 | C-52 | Response `type` and `threadId` are checked. |
+| N-9 | none | The concurrent first-call race remains (now per app). Its worst case is a second member row for that app, which is the same as a lost identity, which S-70 already tells the user about. Not worth the trial's time. |
+| N-10 (T) | none | S-52 already confines the diff to `resolveMember`/`authVerify`/`interface Member`. Tightening the test is T's call, within the existing text. |
+| N-11 | C-40 | One P9 retry. The residual is OVTC-43. |
+| L-26 (`session.id` stored nowhere) | none | Already in S-47. A marker is optional. |

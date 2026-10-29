@@ -178,13 +178,17 @@ export function generateChallenge(randomBytes?: (n: number) => Uint8Array): stri
 ### `replay.ts`
 ```ts
 export const DEFAULT_RETENTION_PAD_MS: number;   // = DEFAULT_SKEW_MS (60_000) from the runtime
-export interface ReplayGuardDeps extends PostgrestDeps { appId: string; retentionPadMs?: number; }
+export interface ReplayGuardDeps extends PostgrestDeps {
+  appId: string; retentionPadMs?: number;
+  acceptanceWindowMs?: number;   // C-39: until_at cap = now + window + 2·DEFAULT_SKEW_MS; default DEFAULT_ACCEPTANCE_WINDOW_MS
+  log?: (event: string, detail?: Record<string, unknown>) => void;   // C-40: release failures
+}
 /** S-22/S-24 */
 export class PostgresReplayGuard implements ReplayGuard {
   constructor(deps: ReplayGuardDeps);
   claim(id: string, digest: string, retainUntil: number | undefined, now: number): Promise<ReplayVerdict>;
-  recordResponse(id: string, response: unknown): Promise<void>;
-  release(id: string, digest: string): Promise<void>;
+  recordResponse(id: string, response: unknown): Promise<void>;   // C-40: P9, one retry, then throw
+  release(id: string, digest: string): Promise<void>;              // C-40: never throws
 }
 ```
 
@@ -226,23 +230,27 @@ export const TRUST_SIGNIN_GUIDANCE: string;
 ### `index.ts`
 `Deno.serve` glue only (S-51). It exports nothing, and it is the only file that may touch `Deno.*`.
 
-### `src/kit/files/lib/trust-signin.ts` (bare imports: `@openvtc/trust-tasks` type-only, `@openvtc/trust-tasks-proof`, `@noble/curves/ed25519.js`)
+### `src/kit/files/lib/trust-signin.ts` (bare imports: `@openvtc/trust-tasks-proof`, `@noble/curves/ed25519.js` only — C-51 drops the type-only `@openvtc/trust-tasks` import; `TrustTaskDocument<P>` is declared locally)
 ```ts
 export const MEMBER_TOKEN_KEY = 'member_token';
-export const IDENTITY_KEY = 'rb.trust-signin.identity.v1';
+// C-37: IDENTITY_KEY ('rb.trust-signin.identity.v1') is REMOVED — no shared identity.
+export const IDENTITY_KEY_PREFIX = 'rb.trust-signin.identity.v2:';
+/** C-37: IDENTITY_KEY_PREFIX + appId.trim().toLowerCase(); blank/non-string → TrustSignInError('invalidAppId', false, 0). SPIKE marker 'shared origin' (C-38). */
+export function identityKeyForApp(appId: string): string;
 export type Custody = 'webcrypto' | 'software';
 export interface DeviceIdentity { did: string; verificationMethod: string; custody: Custody; kind: 'bootstrap'; sign(bytes: Uint8Array): Promise<Uint8Array>; }
 export interface IdentityStore { get(key: string): Promise<unknown>; put(key: string, value: unknown): Promise<void>; }
-export interface GetIdentityOptions { store?: IdentityStore; allowInMemoryFallback?: boolean; }
-export interface SignInOptions { recipient: string; identity?: DeviceIdentity; fetch?: typeof fetch; now?: () => Date; randomUUID?: () => string; storage?: Pick<Storage, 'setItem'>; }
+export interface GetIdentityOptions { appId: string; store?: IdentityStore; allowInMemoryFallback?: boolean; }   // C-37: appId required
+export interface SignInOptions { recipient: string; identity?: DeviceIdentity; identityStore?: IdentityStore;   // C-37: identityStore added
+  fetch?: typeof fetch; now?: () => Date; randomUUID?: () => string; storage?: Pick<Storage, 'setItem'>; }
 export interface TrustMember { id: string; did: string; name: string | null; email: null; }
 export interface SignInResult { member_token: string; member: TrustMember | null; did: string; }
 /** code 'transport' for non-JSON failures (S-61 step 4). */
 export class TrustSignInError extends Error { readonly code: string; readonly retryable: boolean; readonly status: number; constructor(code: string, retryable: boolean, status: number, message?: string); }
 export async function isEd25519Available(): Promise<boolean>;
 export function indexedDbIdentityStore(dbName?: string): IdentityStore;
-/** S-60; no network. */
-export async function getOrCreateIdentity(options?: GetIdentityOptions): Promise<DeviceIdentity>;
+/** S-60; no network. C-37: one identity per app, stored under identityKeyForApp(options.appId) only; options now required. */
+export async function getOrCreateIdentity(options: GetIdentityOptions): Promise<DeviceIdentity>;
 export function buildChallengeDocument(did: string, recipient: string, now: Date, id: string): TrustTaskDocument<{ subject: string; purpose: string }>;
 export function buildAuthenticateDocument(did: string, recipient: string, now: Date, id: string,
   challenge: { challenge: string; sessionId: string }): TrustTaskDocument<{ challenge: string; sessionId: string }>;
@@ -280,8 +288,8 @@ When each call is issued:
 - **P3:** once per authenticate that reaches the handler.
 - **P4:** fire-and-forget after P2.
 - **P5:** at claim. P8 is fire-and-forget after a 201 on P5. P6 runs after a 409 on P5. P7 runs when the P6 row has expired, and is followed by a single retry of P5.
-- **P9:** after the handler returns a document, or a non-retryable refusal.
-- **P10:** after a retryable refusal.
+- **P9:** after the handler returns a document, or a non-retryable refusal. *(C-40)* Issued a second time only if the first rejects or answers non-2xx.
+- **P10:** after a retryable refusal, at most once. *(C-40)* Its failure is logged and swallowed.
 - **P11–P13:** on authenticate success.
 
 Operators used: `eq.`, `lt.`, `lte.`, `is.null`, plus `select=` and the two `Prefer` values. Not used: `order=`, `limit=` (S-12 changelog).
@@ -329,3 +337,24 @@ These are applied in place and recorded as Changelog entries C-1 through C-24. `
 - **R9 Builder UI with `email = null` members.** The Cloud tab renders `m.name || m.email` (`src/components/CloudPanel.tsx:554`), which produces blank rows. `CloudMember.email: string` (`src/cloud/community-cloud.ts:46`) becomes a lie. `admin_restore_backup`'s member upsert has not been checked with null emails. All of this is outside S-52's allowed diff.
 - **R10 esm.sh delivery of the proof package.** `@openvtc/trust-tasks-proof@0.1.3` as delivered by esm.sh in generated apps is untested, including its nested `^0.19` core range and `@noble/*` v2 subpath exports.
 - **R11 Handler throw leaves the claim in flight.** If a handler throws (for example, a DB outage after the challenge was consumed), retries get 202 until the record expires (Q3). The core must catch store errors inside handlers and return `unavailable`. Whether every path does is a review item.
+- **R12 Shared hosting origin (C-38).** Every hosted app and every Builder framework preview shares one origin, so any of them can *use* any app's non-extractable device key. Per-app keys (C-37) stop correlation, not impersonation. Trial-only enablement; per-app origins are a production prerequisite.
+
+## 6. REVIEW-1 amendments (2026-10-28)
+
+Changelog C-37 to C-52 in `SPIKE-SPEC.md` answer `REVIEW-1.md`. Design elements that change:
+
+**§2 signature changes (explicit).** Only the helper's and `replay.ts`'s surfaces change. `core.ts`, `challenges.ts`, `members.ts`, `status.ts` and `catalog.ts` signatures are unchanged.
+- `trust-signin.ts` (C-37): `IDENTITY_KEY` is **removed**. Added: `IDENTITY_KEY_PREFIX = 'rb.trust-signin.identity.v2:'` and `identityKeyForApp(appId)`. `GetIdentityOptions.appId` is **required**, and `getOrCreateIdentity(options)` no longer takes an optional argument. `SignInOptions.identityStore?` is added. `signIn` passes its own `appId` through. This is a breaking change to the helper's surface. Nothing is deployed, so nothing migrates.
+- `trust-signin.ts` (C-51): no import from `@openvtc/trust-tasks`. `TrustTaskDocument<P>` is a local type with the same structural shape, so exported signatures read the same.
+- `replay.ts` (C-39, C-40): `ReplayGuardDeps` gains optional `acceptanceWindowMs` and `log`. This is additive: existing constructions still compile.
+
+**Behaviour changes without a signature change.**
+- *Replay retention cap (C-39).* `until_at = min(retainUntil + pad, now + acceptanceWindowMs + 2·DEFAULT_SKEW_MS)`. Q3's pad still covers the runtime's `recordExpiry` gap, and the cap stops a producer's `expiresAt` from choosing retention. `core.ts` passes the same window to the guard and to `authenticateChecks`.
+- *Total release (C-40).* `release` catches and logs, so a store outage during a retryable refusal stays 503 `unavailable`. `recordResponse` retries P9 once.
+- *Schema walk (C-41).* `items`, `propertyNames` and a schema-valued `additionalProperties` are single sub-schemas, and `properties`/`$defs` are maps. The validator asserts the whole schema before validating, so R5's guard works at any depth. `required` uses own properties.
+- *Verifier (C-42).* `DataIntegrityProofVerifier({now, cryptosuites: ["eddsa-jcs-2022"]})`, plus a `verificationMethod === issuer + "#" + multibase` check composed in `core.ts`, outside `PurposeCheckingVerifier`.
+- *Envelope (C-43).* `checkFrameworkShape` applies the `date-time` rule to `issuedAt`/`expiresAt` and requires a string `parentThreadId`.
+- *Status (C-45).* `unsupportedExtension` → 422.
+- *Helper (C-52).* Each 200 must be `<request type>#response` with `threadId === request id`.
+
+**Recorded deviations added (each with a `// SPIKE:` phrase, C-49).** These are: shared-origin key use (C-38), expiry before mismatch (C-44), retained-error status (C-45), the rate-limit axis and no `rateLimited` (C-46), self-enrolment (C-47), and per-service audience binding (C-48). The envelope checks not done are C-43.
