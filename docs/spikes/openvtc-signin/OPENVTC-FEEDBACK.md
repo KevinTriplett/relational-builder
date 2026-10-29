@@ -327,3 +327,50 @@ When `payloadPolicy.validate.validate` throws, its `e.message` is appended to th
 SPEC §4.7.3 lets a specification require a purpose. `auth/authenticate/0.3` requires `authentication` only for later session-key proofs (`specs/auth/authenticate/0.3/spec.md:140`). The login proof itself is left open, so a consumer accepts `assertionMethod`, `capabilityInvocation` and `capabilityDelegation` logins. Not probed beyond `core.authenticate.test.ts:203-210`, which shows `assertionMethod` → 200.
 
 **Fix.** State it in the task's `proofRequirement`, since the login proof *is* an authentication, and have the runtime enforce a spec-declared purpose.
+
+## Phase 4 — second review (2026-10-28)
+
+From `REVIEW-2.md` §8, written by the review agent after the first review round.
+
+### OVTC-50 · `bug` · Record expiry and freshness disagree on the boundary millisecond, so OVTC-7's suggested fix still allows one double execution
+
+`validateFreshness` calls a document stale only when `issuedAt + maxAgeMs + skewMs < now` (`RT/freshness.ts:143`), so the instant `issuedAt + maxAgeMs + skewMs` itself is **accepted**. `InMemoryReplayGuard` treats a record as absent when `retainUntil <= now` (`RT/replay.ts:198, 209`).
+
+OVTC-7 asked for `recordExpiry` to include `skewMs`. With that fix, `retainUntil` equals the last accepted instant, and at that one millisecond the guard has already dropped the record while freshness still accepts the document.
+
+**Probe.** With `{skewMs: 60000, maxAgeMs: 300000}`, `validateFreshness` at `issuedAt + 360 000` → `null` (accepted), and at `+ 360 001` → `expired`. `InMemoryReplayGuard.claim('b', D, retainUntil = issuedAt + 360 000, now)` → `fresh`. The same claim at `now = issuedAt + 360 000` → **`fresh` again**. Our Postgres guard, which pads by `skewMs` to work around OVTC-7, showed the handler running a second time at exactly that millisecond.
+
+OVTC-7's suggested regression test (`issuedAt + maxAgeMs + skewMs - 1`) does not reach this edge.
+
+**Fix.** Make the two bounds agree. Either return `issuedAt + maxAgeMs + skewMs + 1` from `recordExpiry`, or have guards drop only when `retainUntil < now`, and document which convention `ReplayGuard` implementers must follow (`RT/replay.ts:90-93` says "past which", which reads as strict). Test at the exact edge.
+
+### OVTC-51 · `docs` / `bug` · `maxAgeMs` does not bound acceptance when `issuedAt` is absent and `expiresAt` is present
+
+`validateFreshness` returns `null` for a document with no `issuedAt` whenever `expiresAt` is present, even when the policy sets `maxAgeMs` (`RT/freshness.ts:149-155`). `recordExpiry` then returns that `expiresAt` (`:173-176`). Under any policy without `requireIssuedAt: true`, `maxAgeMs` is therefore not a maximum: the producer's `expiresAt` replaces it.
+
+**Probe.** Policy `{skewMs: 60000, maxAgeMs: 300000}`, document `{expiresAt: "9999-12-31T23:59:59Z"}` with no `issuedAt`. `validateFreshness` → `null` now, and `null` again one year later. `recordExpiry` → year 9999.
+
+**Why it matters.** A consumer that bounds its replay retention to its acceptance window, which is the natural fix for OVTC-44 and the one we applied, opens a replay hole under such a policy: the record ages out while the document is still accepted. We are safe only because we use `CONSEQUENTIAL_FRESHNESS` (`requireIssuedAt: true`).
+
+**Fix.** Do one of the following:
+- also refuse when `expiresAt - now > maxAgeMs + skewMs` if `maxAgeMs` is set; or
+- document on `FreshnessPolicy.maxAgeMs` that it applies only to documents carrying `issuedAt`, and that a consumer capping retention must set `requireIssuedAt`.
+
+Scope OVTC-44's suggested `min(…)` to the case where both timestamps exist, as it already says.
+
+### OVTC-52 · `bug` (minor) · Two `Date.parse` behaviours beyond OVTC-45: impossible dates are rolled over, and a valid leap second is refused with a false message
+
+This extends OVTC-45 with facts a strict-parser fix must handle.
+
+- **Rollover.** V8's `Date.parse` accepts `2031-02-31T05:06:07Z` (→ March 3), `2031-04-31T…` (→ May 1) and `…T24:00:00Z` (→ next day). `validateFreshness` and `validateBasic` therefore treat them as valid timestamps for a different instant. A strict parser has to range-check the day against the month and the hour against 23. A regex alone is not enough; ours wasn't.
+- **Leap second.** `Date.parse("…T23:59:60Z")` is `NaN`, so the runtime answers `malformedRequest` with "issuedAt is not a valid RFC 3339 timestamp" (`RT/freshness.ts:130`). RFC 3339 §5.6 allows `time-second` 60, so the message is false. Refusing leap seconds is reasonable, but the spec or the message should say that this is a policy.
+
+**Probe.** Through our consumer, which pre-checks the RFC 3339 shape but not these ranges:
+- `T24:00:00Z`, `2031-02-31` and `2031-04-31` each completed a sign-in (200);
+- `T23:59:60Z` → 400 with the message above.
+
+**Fix.** Fold these into the single RFC 3339 parser OVTC-45 proposes:
+- range-check by month, with leap years;
+- refuse hour 24;
+- either accept `:60` as `:59.999` or refuse it with an accurate message;
+- add these three cases to the conformance tests.
