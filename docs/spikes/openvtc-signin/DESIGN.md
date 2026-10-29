@@ -114,7 +114,7 @@ export const CODES: { readonly subjectNotRecognized: "auth/challenge:subjectNotR
 export interface PostgrestDeps { fetch: typeof fetch; restUrl: (path: string) => string; svcHeaders: () => Record<string, string>; }
 /** `hit` records one request; true when over the limit. */
 export interface RateLimiter { hit(appId: string, nowMs: number): boolean; }
-/** Fixed 60 s window per appId, app-data semantics (S-40). */
+/** Fixed 60 s window per appId, app-data semantics (S-40). C-57: at most MAX_BUCKETS (10 000) buckets, oldest evicted, no full scan. */
 export class InMemoryRateLimiter implements RateLimiter { constructor(limitPerMin?: number); hit(appId: string, nowMs: number): boolean; }
 export interface CoreDeps extends PostgrestDeps {
   now: () => Date;                 // the only clock (S-42 clock seam)
@@ -181,7 +181,7 @@ export const DEFAULT_RETENTION_PAD_MS: number;   // = DEFAULT_SKEW_MS (60_000) f
 export interface ReplayGuardDeps extends PostgrestDeps {
   appId: string; retentionPadMs?: number;
   acceptanceWindowMs?: number;   // C-39: until_at cap = now + window + 2·DEFAULT_SKEW_MS; default DEFAULT_ACCEPTANCE_WINDOW_MS
-  log?: (event: string, detail?: Record<string, unknown>) => void;   // C-40: release failures
+  log?: (event: string, detail?: Record<string, unknown>) => void;   // C-40: release failures (replay.release_failed); C-59: replay.record_failed
 }
 /** S-22/S-24 */
 export class PostgresReplayGuard implements ReplayGuard {
@@ -358,3 +358,16 @@ Changelog C-37 to C-52 in `SPIKE-SPEC.md` answer `REVIEW-1.md`. Design elements 
 - *Helper (C-52).* Each 200 must be `<request type>#response` with `threadId === request id`.
 
 **Recorded deviations added (each with a `// SPIKE:` phrase, C-49).** These are: shared-origin key use (C-38), expiry before mismatch (C-44), retained-error status (C-45), the rate-limit axis and no `rateLimited` (C-46), self-enrolment (C-47), and per-service audience binding (C-48). The envelope checks not done are C-43.
+
+## 7. REVIEW-2 amendments (2026-10-28)
+
+C-37 to C-52 are now applied in the `SPIKE-SPEC.md` body (R2-1). Changelog C-53 to C-59 answer the rest of `REVIEW-2.md`. **No §2 signature changes.** Behaviour changes:
+- *Date-time rule (C-55).* `isDateTime` (shared by `format: "date-time"` and `checkFrameworkShape`) range-checks day-in-month with leap years, hour ≤ 23, minute ≤ 59, second ≤ 59, offset hour ≤ 23 and minute ≤ 59. Leap second `:60` is refused, marked `// SPIKE: … leap second …`.
+- *Schema value types (C-58).* `checkSchemaNode` throws on a non-object/non-boolean single sub-schema (array-form `items` included), a non-object map or map entry, and wrong-typed values for the typed keywords. The unsupported-keyword message keeps `unsupported schema keyword "<k>"`.
+- *Limiter bound (C-57).* `InMemoryRateLimiter` caps its map at `MAX_BUCKETS`, evicting the first insertion-ordered entry; a bucket whose window closed is deleted and re-inserted. O(1) per hit.
+- *Record failure log (C-59).* `recordResponse` logs `replay.record_failed {failure}` once, after its second failed P9 and before throwing.
+- *Marker wording (C-54).* The rate-limiter `// SPIKE:` line names `app_id` as the DoS precondition and drops `APP_KEY`.
+
+**Recorded, not changed.** Expiry-before-mismatch retryability and record release (C-53); the replay-record boundary millisecond and the cap's dependence on `requireIssuedAt: true` (C-56). See R13.
+
+- **R13 Boundary millisecond (C-56, L-30).** At `until_at` exactly, the record is expired while freshness still accepts; the handler re-runs and only the single-use challenge prevents a second session. Upstream as OVTC-50.
