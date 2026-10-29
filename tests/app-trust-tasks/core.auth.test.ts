@@ -25,6 +25,7 @@ import { CORS_HEADERS, mapOutcomeToHttp, plainError, responseHeaders, statusForC
 import {
   APP_A, APP_OFF, KEY_A, KEY_OFF, LOCAL_VID, SUPABASE_URL, expectError, makeEnv, makeFake, post, signInFlow, TestClock,
 } from './helpers.ts';
+import { documentDigest } from '@openvtc/trust-tasks';
 import { challengeDoc, mintDidKey } from './producer.ts';
 
 const FN_DIR = fileURLToPath(new URL('../../supabase/functions/app-trust-tasks/', import.meta.url));
@@ -75,8 +76,8 @@ describe('app authentication precedes parsing (S-40)', () => {
     expect(env.fake.callsOf('P1')).toHaveLength(120);
   });
 
-  it('S-40 unknown app, wrong key, or a non-uuid app_id → 403 {error:"Unknown app or wrong key"} (one P1 lookup)', async () => {
-    for (const [appId, appKey] of [['99999999-9999-4999-8999-999999999999', KEY_A], [APP_A, 'wrong-key'], ['not-a-uuid', KEY_A]]) {
+  it('S-40 unknown app or wrong key → 403 {error:"Unknown app or wrong key"} (one P1 lookup)', async () => {
+    for (const [appId, appKey] of [['99999999-9999-4999-8999-999999999999', KEY_A], [APP_A, 'wrong-key']]) {
       const env = makeEnv();
       const res = await post(env, chDoc(env), appId, appKey);
       expect(res).toEqual({ status: 403, body: { error: 'Unknown app or wrong key' } });
@@ -162,6 +163,103 @@ describe('the rate limiter\'s memory is bounded (C-57)', () => {
   it('C-57 the self-check: bucketsOf finds the one Map on a concrete object', () => {
     const fakeLimiter = { limit: 3, buckets: new Map([['a', 1]]) } as unknown as InMemoryRateLimiter;
     expect(bucketsOf(fakeLimiter).get('a')).toBe(1);
+  });
+});
+
+describe('app_id is shape-checked and lowercased before the limiter (C-61)', () => {
+  // APP_A ('11111111-1111-4111-8111-111111111111') has no hex letters, so APP_A.toUpperCase() === APP_A
+  // and oracles 4–6 would be vacuous with it. They use APP_HEX, an enabled app whose id has letters.
+  const APP_HEX = 'abcdef01-2345-4bcd-8ef0-123456789abc';
+  const KEY_HEX = 'key-hex-secret';
+  const UPPER = APP_HEX.toUpperCase();
+  function hexEnv() {
+    const env = makeEnv();
+    env.fake.addApp({ id: APP_HEX, app_key: KEY_HEX, trust_signin_enabled: true });
+    return env;
+  }
+  const MALFORMED: Array<[string, string]> = [
+    ['not-a-uuid', 'not-a-uuid'],
+    ['8 KB of "a"', 'a'.repeat(8192)],
+    ['no hyphens', APP_A.replace(/-/g, '')],
+    ['braces', `{${APP_A}}`],
+    ['leading space', ` ${APP_A}`],
+    ['trailing space', `${APP_A} `],
+    ['trailing \\n', `${APP_A}\n`],
+    ['35 characters', APP_A.slice(0, 35)],
+    ['37 characters', `${APP_A}0`],
+    ['urn:uuid: prefix', `urn:uuid:${APP_A}`],
+    ['a g digit', `g${APP_A.slice(1)}`],
+  ];
+
+  it('C-61 the self-check: the malformed ids are what they claim, and UPPER differs from APP_HEX', () => {
+    expect(MALFORMED.map(([, id]) => id.length)).toEqual([10, 8192, 32, 38, 37, 37, 37, 35, 37, 45, 36]);
+    expect(MALFORMED[10][1]).toMatch(/^g/);
+    expect(UPPER).not.toBe(APP_HEX);
+    expect(UPPER.toLowerCase()).toBe(APP_HEX);
+  });
+
+  it('C-61 oracle 1: each malformed app_id, with KEY_A and a valid challenge body → 403 {error:"Unknown app or wrong key"}, no limiter hit, no PostgREST call', async () => {
+    for (const [label, appId] of MALFORMED) {
+      const env = makeEnv();
+      const res = await post(env, chDoc(env), appId, KEY_A);
+      expect(res, label).toEqual({ status: 403, body: { error: 'Unknown app or wrong key' } });
+      expect(env.limiter.hits, label).toEqual([]);
+      expect(env.fake.calls, label).toEqual([]);
+    }
+  });
+
+  it('C-61 oracle 2: with a real InMemoryRateLimiter, 20 000 requests each carrying a distinct malformed id leave the limiter\'s map empty', async () => {
+    const env = makeEnv();
+    const rl = new InMemoryRateLimiter();
+    env.deps.rateLimiter = rl;
+    const body = chDoc(env);
+    for (let i = 0; i < 20_000; i++) {
+      const res = await handleTrustTask(env.deps, { appId: `not-a-uuid-${i}`, appKey: KEY_A, rawBody: body });
+      if (res.status !== 403) expect(res, `request ${i}`).toEqual({ status: 403, body: { error: 'Unknown app or wrong key' } });
+    }
+    expect(bucketsOf(rl).size).toBe(0);
+  });
+
+  it('C-61 oracle 3: a malformed app_id with an empty app_key → 401 (missing credentials win)', async () => {
+    const env = makeEnv();
+    const res = await handleTrustTask(env.deps, { appId: 'not-a-uuid', appKey: '', rawBody: chDoc(env) });
+    expect(res).toEqual({ status: 401, body: { error: 'app_id and app_key required' } });
+    expect(env.limiter.hits).toEqual([]);
+    expect(env.fake.calls).toEqual([]);
+  });
+
+  it('C-61 oracle 4: an uppercase app_id → the challenge succeeds (200); the limiter hit is under the lowercase id; P1 queries id=eq.<lowercase>', async () => {
+    const env = hexEnv();
+    const res = await post(env, chDoc(env), UPPER, KEY_HEX);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(env.limiter.hits).toEqual([{ appId: APP_HEX, nowMs: env.clock.ms }]);
+    expect(env.fake.callsOf('P1')[0].query).toEqual({ id: `eq.${APP_HEX}`, select: 'id,app_key,trust_signin_enabled' });
+    expect(env.fake.tables.app_tt_challenges.map((r) => r.app_id)).toEqual([APP_HEX]);
+  });
+
+  it('C-61 oracle 5: 121 requests in one window alternating the lowercase and uppercase id → the first 120 succeed and the 121st is 429', async () => {
+    const env = hexEnv();
+    env.deps.rateLimiter = new InMemoryRateLimiter();
+    const statuses: number[] = [];
+    for (let i = 0; i < 121; i++) {
+      const res = await handleTrustTask(env.deps, { appId: i % 2 === 0 ? APP_HEX : UPPER, appKey: KEY_HEX, rawBody: chDoc(env) });
+      statuses.push(res.status);
+    }
+    expect(statuses.slice(0, 120).every((s) => s === 200), JSON.stringify(statuses)).toBe(true);
+    expect(statuses[120]).toBe(429);
+  });
+
+  it('C-61 oracle 6: a sign-in completed under the uppercase id writes app_tt_replay.app_id = the lowercase id; its identical resend under the same uppercase id → 204, not 409', async () => {
+    const env = hexEnv();
+    const { doc, res } = await signInFlow(env, mintDidKey(), { appId: UPPER, appKey: KEY_HEX });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(env.fake.tables.app_tt_replay).toEqual([expect.objectContaining({ doc_id: doc.id, app_id: APP_HEX, digest: documentDigest(doc) })]);
+    expect(env.fake.tables.app_sessions.map((r) => r.app_id)).toEqual([APP_HEX]);
+    expect(env.fake.tables.app_members.map((r) => r.app_id)).toEqual([APP_HEX]);
+    const again = await post(env, doc, UPPER, KEY_HEX);
+    expect(again.status).toBe(204);
+    expect(again.body).toBeUndefined();
+    expect(env.fake.tables.app_sessions).toHaveLength(1);
   });
 });
 

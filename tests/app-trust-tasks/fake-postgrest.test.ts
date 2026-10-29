@@ -50,13 +50,13 @@ describe('fake PostgREST contract (S-12)', () => {
     expect(f.violations).toEqual([]);
   });
 
-  it('S-12 a full sign-in, a replay and a refusal issue only P1–P13 calls with the modelled shapes', async () => {
+  it('S-12 a full sign-in, a replay and a refusal issue only P1–P13 calls with the modelled shapes (the replay is the C-60 204)', async () => {
     const env = makeEnv();
     const { doc, res } = await signInFlow(env);
     expect(res.status).toBe(200);
     await signInFlow(env);
     const again = await import('./helpers.ts').then((m) => m.post(env, doc));
-    expect(again.status).toBe(200);
+    expect(again.status).toBe(204);
     expect(env.fake.violations).toEqual([]);
     expect(new Set(env.fake.callIds())).toEqual(new Set(['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P8', 'P9', 'P11', 'P12', 'P13']));
   });

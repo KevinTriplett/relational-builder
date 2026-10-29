@@ -3,6 +3,7 @@ import {
   CONSEQUENTIAL_FRESHNESS,
   DEFAULT_SKEW_MS,
   UnauthenticatedTransport,
+  TRUST_TASK_ERROR_TYPE_URI,
   consumeInbound,
   documentDigest,
   respondWith,
@@ -10,6 +11,8 @@ import {
   type TrustTaskDocument,
 } from '@openvtc/trust-tasks';
 import { DEFAULT_RETENTION_PAD_MS, PostgresReplayGuard } from '../../supabase/functions/app-trust-tasks/replay.ts';
+// C-60 adds the COMPLETED_RECORD export; read through the namespace so this file type-checks before and after it exists.
+import * as replayModule from '../../supabase/functions/app-trust-tasks/replay.ts';
 import { APP_A, APP_B, TestClock, authDoc, getChallenge, makeEnv, makeFake, post, rejectionOf, settle } from './helpers.ts';
 import { mintDidKey } from './producer.ts';
 import type { ReplayRow } from './fake-postgrest.ts';
@@ -75,14 +78,16 @@ describe('PostgresReplayGuard.claim (S-22)', () => {
     expect(fake.callsOf('P6')).toHaveLength(1);
   });
 
-  it('S-22 after recordResponse (P9), a duplicate returns {priorResponse, inFlight:false}', async () => {
+  it('S-22 / C-60 after recordResponse (P9) of a success, P9 stores {completed:true} and a duplicate is {inFlight:false} with no priorResponse', async () => {
     const { clock, fake, guard } = setup();
     const response = { id: 'r1', type: 'x#response', payload: { tokens: { accessToken: 'T' } } };
     await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
     await guard.recordResponse(ID, response);
     expect(fake.callsOf('P9')[0].query).toEqual({ doc_id: `eq.${ID}`, app_id: `eq.${APP_A}` });
-    expect(fake.callsOf('P9')[0].body).toEqual({ response });
-    expect(await guard.claim(ID, D1, clock.ms + 300_000, clock.ms)).toEqual({ kind: 'duplicate', priorResponse: response, inFlight: false });
+    expect(fake.callsOf('P9')[0].body).toEqual({ response: { completed: true } });
+    const v = await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+    expect(v).toEqual({ kind: 'duplicate', inFlight: false });
+    expect(v).not.toHaveProperty('priorResponse');
   });
 
   it('S-22 same id + different digest → conflict', async () => {
@@ -152,7 +157,7 @@ describe('PostgresReplayGuard.claim (S-22)', () => {
     expect(fake.tables.app_tt_replay.map((r) => r.doc_id)).toEqual(['doc-2']);
   });
 
-  it('S-22 PostgresReplayGuard is a ReplayGuard the runtime can drive: consumeInbound executes once, then answers the duplicate with the retained response', async () => {
+  it('S-22 / C-60 PostgresReplayGuard is a ReplayGuard the runtime can drive: consumeInbound executes once, then answers the duplicate {inFlight:false} with no retained response', async () => {
     const { clock, fake, guard } = setup();
     const g: ReplayGuard = guard;
     const doc: TrustTaskDocument<{ n: number }> = {
@@ -181,13 +186,66 @@ describe('PostgresReplayGuard.claim (S-22)', () => {
     expect(first.kind).toBe('handled');
     const second = await run();
     expect(second).toMatchObject({ kind: 'duplicate', inFlight: false });
-    expect((second as { priorResponse?: unknown }).priorResponse).toEqual((first as { response: unknown }).response);
+    expect((second as { priorResponse?: unknown }).priorResponse).toBeUndefined();
     expect(executions).toBe(1);
     // retainUntil from the runtime (issuedAt + maxAgeMs) plus the pad.
     expect(fake.tables.app_tt_replay[0].until_at).toBe(new Date(clock.ms + 300_000 + 60_000).toISOString());
     // S-11: keyed on the document id; digest is the whole-document digest.
     expect(fake.tables.app_tt_replay[0].doc_id).toBe(doc.id);
     expect(fake.tables.app_tt_replay[0].digest).toBe(documentDigest(doc));
+  });
+});
+
+describe('the guard never retains a success response (C-60)', () => {
+  const errorDoc = {
+    id: 'err-1', type: TRUST_TASK_ERROR_TYPE_URI, issuer: 'did:web:fakeproject.supabase.co', recipient: 'did:key:z6MkP', threadId: ID,
+    payload: { code: 'auth/authenticate:challengeNotFound', retryable: false, message: 'Challenge not found' },
+  };
+  const successDoc = (token: string) => ({
+    id: 'resp-1', type: 'https://trusttasks.org/spec/auth/authenticate/0.3#response', issuer: 'did:web:fakeproject.supabase.co', threadId: ID,
+    payload: { session: { id: 'sess-1', subject: 'did:key:z6MkP' }, tokens: { accessToken: token, tokenType: 'Bearer', expiresIn: 60 } },
+  });
+
+  it('C-60 a trust-task-error document is stored verbatim by P9 and replayed as priorResponse (inFlight:false)', async () => {
+    const { clock, fake, guard } = setup();
+    await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+    await guard.recordResponse(ID, errorDoc);
+    expect(fake.callsOf('P9')[0].body).toEqual({ response: errorDoc });
+    expect(fake.tables.app_tt_replay[0].response).toEqual(errorDoc);
+    expect(await guard.claim(ID, D1, clock.ms + 300_000, clock.ms)).toEqual({ kind: 'duplicate', inFlight: false, priorResponse: errorDoc });
+  });
+
+  it('C-60 a seeded pre-C-60 row holding a full success #response → duplicate {inFlight:false} with no priorResponse property', async () => {
+    const { clock, fake, guard } = setup();
+    const token = 'f'.repeat(64);
+    fake.tables.app_tt_replay.push({ doc_id: ID, app_id: APP_A, digest: D1, response: successDoc(token), until_at: new Date(clock.ms + 300_000).toISOString() });
+    const v = await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+    expect(v).toEqual({ kind: 'duplicate', inFlight: false });
+    expect(v).not.toHaveProperty('priorResponse');
+    expect(JSON.stringify(v)).not.toContain(token);
+  });
+
+  it('C-60 replay.ts exports COMPLETED_RECORD = {completed:true}, frozen', () => {
+    const rec = (replayModule as Record<string, unknown>).COMPLETED_RECORD;
+    expect(rec).toEqual({ completed: true });
+    expect(Object.isFrozen(rec)).toBe(true);
+  });
+
+  it('C-60 P9\'s request body never contains the success token (one attempt, and the C-40 retry)', async () => {
+    const token = 'c'.repeat(64);
+    for (const faults of [[], [503]] as const) {
+      const { clock, fake, guard } = setup();
+      await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+      if (faults.length) fake.script('P9', ...faults);
+      await guard.recordResponse(ID, successDoc(token));
+      const p9 = fake.callsOf('P9');
+      expect(p9, String(faults)).toHaveLength(1 + faults.length);
+      for (const call of p9) {
+        expect(call.body).toEqual({ response: { completed: true } });
+        expect(JSON.stringify(call.body)).not.toContain(token);
+      }
+      expect(JSON.stringify(fake.tables.app_tt_replay)).not.toContain(token);
+    }
   });
 });
 
@@ -282,14 +340,14 @@ describe('release is total; recordResponse retries once (C-40)', () => {
     await expect(guard.release(ID, D1)).resolves.toBeUndefined();
   });
 
-  it('C-40 recordResponse: P9 failing once (503 or rejected) is retried once and the response is stored', async () => {
+  it('C-40 / C-60 recordResponse: P9 failing once (503 or rejected) is retried once and the response is stored (a success as {completed:true})', async () => {
     for (const fault of [503, 'reject'] as const) {
       const { clock, fake, guard } = guardWith({});
       await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
       fake.script('P9', fault);
       await expect(guard.recordResponse(ID, { done: true })).resolves.toBeUndefined();
       expect(fake.callsOf('P9'), String(fault)).toHaveLength(2);
-      expect(fake.tables.app_tt_replay[0].response).toEqual({ done: true });
+      expect(fake.tables.app_tt_replay[0].response).toEqual({ completed: true });
     }
   });
 

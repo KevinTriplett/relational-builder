@@ -263,12 +263,16 @@ describe('signIn wire shape (S-61)', () => {
     expect(e2).toMatchObject({ code: 'auth/challenge:subjectNotRecognized', retryable: false, status: 200 });
   });
 
-  it('S-61 202 or 204 on authenticate → TrustSignInError("noResponse", true, status)', async () => {
+  it('S-61 / C-62 202 or 204 (no body, no Content-Type) on authenticate → TrustSignInError("noResponse", true, status); storage.setItem is never called; exactly two fetches', async () => {
     for (const status of [202, 204]) {
       const f = scriptedFetch([challengeResponseFor, () => new Response(null, { status })]);
-      const e = await rejectionOf(signIn(BASE, APP_A, KEY_A, { recipient: RECIPIENT, identity: softwareIdentity(), fetch: f.fetch, now: () => NOW, storage: { setItem: () => {} } }));
+      const setItem = vi.fn();
+      const e = await rejectionOf(signIn(BASE, APP_A, KEY_A, { recipient: RECIPIENT, identity: softwareIdentity(), fetch: f.fetch, now: () => NOW, storage: { setItem } }));
       expect(e).toBeInstanceOf(TrustSignInError);
       expect(e).toMatchObject({ code: 'noResponse', retryable: true, status });
+      expect(setItem, String(status)).not.toHaveBeenCalled();
+      expect(f.fetch, String(status)).toHaveBeenCalledTimes(2);
+      expect(f.requests, String(status)).toHaveLength(2);
     }
   });
 

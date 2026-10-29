@@ -466,25 +466,30 @@ describe('sessionKey and proxied form refused in Increment 1 (S-45, S-46)', () =
 });
 
 describe('replay semantics end-to-end (S-48, S-11, S-24)', () => {
-  it('S-48 re-sending the identical signed document → 200 with the retained #response (same accessToken), no new session row, no new handler calls', async () => {
+  it('S-48 / C-60 re-sending the identical signed document → 204, no body (the token is not retained), no new session row, no new handler calls', async () => {
     const env = makeEnv();
     const { doc, res } = await signInFlow(env);
     expect(res.status).toBe(200);
     const start = env.fake.calls.length;
     const again = await post(env, doc);
-    expect(again.status).toBe(200);
-    expect(again.body).toEqual(res.body);
+    expect(again.status).toBe(204);
+    expect(again.body).toBeUndefined();
     expect(sessionCount(env)).toBe(1);
     expect(env.fake.calls.slice(start).map((c) => c.id)).toEqual(['P1', 'P5', 'P6']);
   });
 
-  it('S-11 the replay record is keyed on the document id; digest = sha256Hex(canonicalJson(document)) including proof; response retained', async () => {
+  it('S-11 / C-60 the replay record is keyed on the document id; digest = sha256Hex(canonicalJson(document)) including proof; a success is recorded as {completed:true}, never the token', async () => {
     const env = makeEnv();
     const { doc, res } = await signInFlow(env);
     expect(env.fake.tables.app_tt_replay).toEqual([
       expect.objectContaining({ doc_id: doc.id, app_id: APP_A, digest: documentDigest(doc) }),
     ]);
-    expect(env.fake.tables.app_tt_replay[0].response).toEqual(res.body);
+    expect(env.fake.tables.app_tt_replay[0].response).toEqual({ completed: true });
+    const { session, tokens } = (res.body as AuthResponse).payload;
+    const stored = JSON.stringify(env.fake.tables.app_tt_replay);
+    expect(stored).not.toContain(tokens.accessToken);
+    expect(stored).not.toContain(session.id);
+    expect(stored).not.toContain('"tokens"');
     const { proof, ...withoutProof } = doc;
     void proof;
     expect(env.fake.tables.app_tt_replay[0].digest).not.toBe(documentDigest(withoutProof));
@@ -515,7 +520,7 @@ describe('replay semantics end-to-end (S-48, S-11, S-24)', () => {
     expect(env.fake.tables.app_tt_challenges[0].consumed_at).toBeNull();
   });
 
-  it('S-48 / S-22 window edge: a document acceptanceWindowMs + 30 s old completes once; its record is live (until_at = issuedAt + window + 60 s pad); the identical resend gets the retained response', async () => {
+  it('S-48 / S-22 / C-60 window edge: a document acceptanceWindowMs + 30 s old completes once; its record is live (until_at = issuedAt + window + 60 s pad); the identical resend gets 204 with no body', async () => {
     const env = makeEnv();
     const identity = mintDidKey();
     const c = await getChallenge(env, identity);
@@ -527,8 +532,8 @@ describe('replay semantics end-to-end (S-48, S-11, S-24)', () => {
     expect(Date.parse(env.fake.tables.app_tt_replay[0].until_at)).toBeGreaterThan(env.clock.ms);
     env.clock.advance(20_000);
     const again = await post(env, d);
-    expect(again.status).toBe(200);
-    expect(again.body).toEqual(first.body);
+    expect(again.status).toBe(204);
+    expect(again.body).toBeUndefined();
     expect(sessionCount(env)).toBe(1);
   });
 
@@ -575,6 +580,33 @@ describe('replay semantics end-to-end (S-48, S-11, S-24)', () => {
     expectError(r, 409, 'idConflict');
     expect(JSON.stringify(r.body)).not.toContain(token);
     expect(sessionCount(env)).toBe(1);
+  });
+});
+
+describe('a completed sign-in\'s response is not retained (C-60)', () => {
+  it('C-60 oracle 4: a row seeded with a full success #response (the pre-C-60 shape) for the document\'s id, digest and app → the identical document gets 204 with no body; the seeded token is not in the answer; no P3', async () => {
+    const env = makeEnv();
+    const identity = mintDidKey();
+    const c = await getChallenge(env, identity);
+    const d = authDoc(env, identity, c);
+    const seededToken = 'e'.repeat(64);
+    const seededSessionId = crypto.randomUUID();
+    const legacy = {
+      id: crypto.randomUUID(), type: AuthAuthenticate_v0_3.RESPONSE_TYPE_URI, issuer: LOCAL_VID, recipient: identity.did, threadId: d.id,
+      issuedAt: env.clock.iso(),
+      payload: {
+        session: { id: seededSessionId, subject: identity.did, issuedAt: env.clock.iso(), expiresAt: env.clock.iso(DEFAULT_SESSION_TTL_MS), amr: ['did'], acr: 'aal1' },
+        tokens: { accessToken: seededToken, tokenType: 'Bearer', expiresIn: DEFAULT_SESSION_TTL_MS / 1000 },
+      },
+    };
+    env.fake.tables.app_tt_replay.push({ doc_id: d.id, app_id: APP_A, digest: documentDigest(d), response: legacy, until_at: env.clock.iso(600_000) });
+    const res = await post(env, d);
+    expect(res.status).toBe(204);
+    expect(res.body).toBeUndefined();
+    expect(JSON.stringify(res)).not.toContain(seededToken);
+    expect(JSON.stringify(res)).not.toContain(seededSessionId);
+    expect(env.fake.callsOf('P3')).toHaveLength(0);
+    expect(sessionCount(env)).toBe(0);
   });
 });
 
@@ -795,7 +827,7 @@ describe('replay retention cap and release/record failures end to end (C-39, C-4
     expect(env.fake.callsOf('P10')).toHaveLength(1);
   });
 
-  it('C-40 oracle 3: P9 failing once then succeeding → the identical resend gets 200 and the retained response', async () => {
+  it('C-40 oracle 3 / C-60: P9 failing once then succeeding → the record is {completed:true}; the identical resend gets 204 with no body', async () => {
     const env = makeEnv();
     const id = mintDidKey();
     const c = await getChallenge(env, id);
@@ -804,9 +836,10 @@ describe('replay retention cap and release/record failures end to end (C-39, C-4
     const first = await post(env, d);
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     expect(env.fake.callsOf('P9')).toHaveLength(2);
+    expect(env.fake.tables.app_tt_replay[0].response).toEqual({ completed: true });
     const again = await post(env, d);
-    expect(again.status).toBe(200);
-    expect(again.body).toEqual(first.body);
+    expect(again.status).toBe(204);
+    expect(again.body).toBeUndefined();
     expect(sessionCount(env)).toBe(1);
   });
 
