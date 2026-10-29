@@ -460,7 +460,7 @@ Exactly those listed in DESIGN §6, nothing else:
 
 ### REVIEW-1 nits
 
-- **N-3 done.** `InMemoryRateLimiter` evicts every bucket whose 60 s window has closed once it holds `MAX_BUCKETS` (10 000) distinct ids and sees a new one. Limits within a window are unchanged.
+- **N-3 done, then corrected by C-57.** *(Correction, REVIEW-2 loop.)* As first implemented, `InMemoryRateLimiter` evicted only buckets whose 60 s window had closed, by a full scan of the map, once it held `MAX_BUCKETS` (10 000) ids and saw a new one. That left the map unbounded within one window and made each new id O(n). C-57 replaced it; see `## REVIEW-2 loop`.
 - **N-4 done.** `app_key` is compared with the existing `constantTimeEqual` (and must be a string).
 - **N-6 done.** The `replay.ts` header now says the P8 sweep is global (expired rows of every app), and the app-scoping note is a plain comment, not a `// SPIKE:` marker. The `retention pad` marker remains, so `replay.ts` still has ≥ 1.
 - **N-9 skipped.** D declined it (worst case = a lost identity, already covered by S-70).
@@ -533,3 +533,90 @@ index d4bb59e..59dafd3 100644
  
  /** Resolve the signed-in builder's email from the Authorization header */
 ```
+
+## REVIEW-2 loop
+
+Implementation agent, 2026-10-28. Starting point: commit 65288de (44 failed, 242 passed, 6 todo). Code commit: `5889ce6`. No TEST-DISPUTE entries were needed: every failing test matched its C-entry.
+
+### Per C-number
+
+- **C-53.** Spec wording only (expiry before mismatch: retryability and record fate). No code change; the existing `expiry before mismatch` marker stands.
+- **C-54** (`core.ts`). The rate-limiter `// SPIKE:` line now reads "… anyone who knows an app_id can spend its budget, even with a wrong key — C-46, C-54". It keeps `per-app` and `rateLimited` and no longer names `APP_KEY`. The S-40 order (limit before key check) is unchanged.
+- **C-55** (`core.ts`). `DATE_TIME` now captures the offset hours and minutes. `isDateTime` checks month 01–12, day 01 to `daysInMonth(year, month)` (new private helper, Gregorian leap years), hour ≤ 23, minute ≤ 59, second ≤ 59, and offset hours ≤ 23 and minutes ≤ 59. The second check carries `// SPIKE: leap second refused …` (`core.ts` now has 11 markers). `checkFrameworkShape` already called `isDateTime`, so envelope `issuedAt`/`expiresAt` get the same rule with the existing constant message naming the member.
+- **C-56.** Known behaviour, pinned by tests; no code change.
+- **C-57** (`core.ts`). `InMemoryRateLimiter.hit` has no full scan. For an id with no bucket and a full map (`MAX_BUCKETS` = 10 000), it deletes the first key in insertion order. A bucket whose window has closed is `delete`d and re-`set`, so insertion order is window-start order. O(1) amortized. The bucket map stays an ordinary (TS-`private`, not `#private`) `Map` field, the only `Map` on the instance. The N-3 line above is corrected.
+- **C-58** (`core.ts`). `checkSchemaNode` now calls a new private `checkKeywordValue(key, value)` for every supported keyword, after the unsupported-keyword check (whose message `S-25: unsupported schema keyword "<k>"` is unchanged). It throws a plain `Error` `S-25: schema keyword "<k>" must be …` for: a non-object, non-boolean `items`/`propertyNames`/`additionalProperties` (array-form `items` included); a non-object `properties`/`$defs` or one with a value that is not an object or boolean; a `type` that is not one of the seven names (arrays included); a `required` that is not an array of strings; a `minLength`/`maxLength`/`minItems`/`minProperties` that is not a non-negative integer; a `minimum` that is not a finite number; a non-string `pattern`/`format`/`$ref`. A string but non-local `$ref` still throws `S-25: non-local $ref …`. Annotations are not checked. Because `validate` asserts first, each of these throws from `validate` too, whatever the value.
+- **C-59** (`replay.ts`). Before its final throw, `recordResponse` calls `this.log?.("replay.record_failed", { failure })`, with `failure` = `"HTTP <status>"` or `"fetch rejected"` from the last attempt, inside a try/catch that swallows a throwing sink. No id or digest is logged, and the thrown message is unchanged (it names neither). The `ReplayGuardDeps.log` doc comment now lists both events.
+
+### DESIGN §2 signature changes
+
+None. The new functions (`daysInMonth`, `checkKeywordValue`, `isSubSchema`, `isNonNegativeInteger`) are module-private.
+
+### Finish-line outputs (REVIEW-2 loop, §4)
+
+```
+$ npx vitest run
+ Test Files  13 passed (13)
+      Tests  286 passed | 6 todo (292)
+   Duration  636ms (import 75%, tests 19%, transform 3%, setup 2%, worker 1%)
+
+$ npx tsc --noEmit -p tsconfig.functions.json
+exit 0
+$ npx tsc --noEmit -p tsconfig.app.json
+exit 0
+$ npx eslint supabase/functions/app-trust-tasks src/kit/files/lib/trust-signin.ts src/integrations/catalog.ts src/cloud/community-cloud.ts
+exit 0 (no output)
+$ deno check supabase/functions/app-trust-tasks/index.ts
+Check supabase/functions/app-trust-tasks/index.ts
+exit 0
+$ deno eval '…trust-tasks@0.26.29 …trust-tasks-proof@0.1.3…'
+ok
+exit 0
+$ grep -rn "Deno\." supabase/functions/app-trust-tasks/{core,challenges,replay,members,status}.ts
+(no output) exit 1
+$ git diff 6b68ea634f37a70e3a5ef3146d74a02072eda094 -- supabase/functions/app-data/index.ts
+diff --git a/supabase/functions/app-data/index.ts b/supabase/functions/app-data/index.ts
+index d4bb59e..59dafd3 100644
+--- a/supabase/functions/app-data/index.ts
++++ b/supabase/functions/app-data/index.ts
+@@ -335,8 +335,9 @@ Deno.serve(async (req: Request) => {
+ 
+ interface Member {
+   id: string;
+-  email: string;
++  email: string | null;
+   name: string | null;
++  did: string | null;
+ }
+ 
+ const CODE_TTL_MS = 10 * 60 * 1000;
+@@ -356,7 +357,7 @@ async function resolveMember(appId: string, tokenRaw: unknown): Promise<Member |
+   const sessions = res.ok ? await res.json() : [];
+   if (!sessions.length || new Date(sessions[0].expires_at) < new Date()) return null;
+   const memberRes = await fetch(
+-    restUrl(`/app_members?id=eq.${sessions[0].member_id}&select=id,email,name`),
++    restUrl(`/app_members?id=eq.${sessions[0].member_id}&select=id,email,name,did`),
+     { headers: svcHeaders() },
+   );
+   const members = memberRes.ok ? await memberRes.json() : [];
+@@ -587,7 +588,7 @@ async function authVerify(appId: string, body: Record<string, unknown>): Promise
+ 
+   // Upsert the member (name from the sign-in request wins when present)
+   const existingRes = await fetch(
+-    restUrl(`/app_members?app_id=eq.${encodeURIComponent(appId)}&email=eq.${encodeURIComponent(email)}&select=id,email,name`),
++    restUrl(`/app_members?app_id=eq.${encodeURIComponent(appId)}&email=eq.${encodeURIComponent(email)}&select=id,email,name,did`),
+     { headers: svcHeaders() },
+   );
+   const existing = existingRes.ok ? await existingRes.json() : [];
+@@ -625,7 +626,7 @@ async function authVerify(appId: string, body: Record<string, unknown>): Promise
+   });
+   if (!sessRes.ok) return json({ error: 'Could not start your session' }, 500);
+ 
+-  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name } });
++  return json({ ok: true, member_token: token, member: { id: member.id, email: member.email, name: member.name, did: member.did } });
+ }
+ 
+ /** Resolve the signed-in builder's email from the Authorization header */
+```
+
+The `app-data` diff is unchanged from the REVIEW-1 loop (S-52 / C-30 changes only); this loop did not touch that file.
