@@ -11,6 +11,7 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const FN = `${ROOT}supabase/functions/app-trust-tasks/`;
 const read = (p: string) => readFileSync(p, 'utf8');
 const BASE_NOTES = read(`${ROOT}docs/spikes/openvtc-signin/BASE_SHA`);
+const HELPER = `${ROOT}src/kit/files/lib/trust-signin.ts`;
 
 describe('non-functional', () => {
   it('NF-3 dev dependencies only: vitest, @openvtc/trust-tasks@0.26.x, @openvtc/trust-tasks-proof, @noble/curves; none in dependencies', () => {
@@ -50,13 +51,107 @@ describe('non-functional', () => {
     }
   });
 
-  it('NF-5 per-file minimum // SPIKE: markers (C-34): core.ts ≥ 5 incl. the exact S-30 line; replay.ts, index.ts, trust-signin.ts ≥ 1', () => {
-    const core = read(`${FN}core.ts`);
-    expect(core).toContain('// SPIKE: unsigned responses; local_vid is a label');
-    const count = (s: string) => (s.match(/\/\/ SPIKE:/g) ?? []).length;
-    expect(count(core), 'core.ts: S-30 label + S-44, S-47, S-25, rate limiter (C-34)').toBeGreaterThanOrEqual(5);
-    expect(count(read(`${FN}replay.ts`)), 'replay.ts: S-22 retention pad').toBeGreaterThanOrEqual(1);
-    expect(count(read(`${FN}index.ts`)), 'index.ts: S-51 OPTIONS').toBeGreaterThanOrEqual(1);
-    expect(count(read(`${ROOT}src/kit/files/lib/trust-signin.ts`)), 'trust-signin.ts: software custody').toBeGreaterThanOrEqual(1);
+  it('NF-5 / C-49 per-file // SPIKE: markers, each listed phrase on the same line as a // SPIKE: (core.ts ≥ 9, status.ts ≥ 1, replay.ts ≥ 1, index.ts ≥ 1, trust-signin.ts ≥ 2)', () => {
+    const files = {
+      core: read(`${FN}core.ts`),
+      status: read(`${FN}status.ts`),
+      replay: read(`${FN}replay.ts`),
+      index: read(`${FN}index.ts`),
+      helper: read(HELPER),
+    };
+    const missing: string[] = [];
+    const need = (file: keyof typeof files, ...phrases: string[]) => {
+      if (!hasMarker(files[file], ...phrases)) missing.push(`${file}: ${phrases.join(' + ')}`);
+    };
+    if (!spikeLines(files.core).some((l) => l.trim() === '// SPIKE: unsigned responses; local_vid is a label')) missing.push('core: exact S-30 line');
+    need('core', 'consume-before-compare');
+    need('core', 'unsigned', '#response');
+    need('core', 'subset validator');
+    need('core', 'per-app', 'rateLimited');
+    need('core', 'expiry before mismatch');
+    need('core', 'envelope');
+    need('core', 'self-enrolment');
+    need('core', 'audience');
+    need('status', 'retained error');
+    need('replay', 'retention pad');
+    need('index', 'OPTIONS');
+    need('helper', 'software');
+    need('helper', 'shared origin');
+    expect(missing, 'C-49 phrases not found on a // SPIKE: line').toEqual([]);
+    const minimum: Record<keyof typeof files, number> = { core: 9, status: 1, replay: 1, index: 1, helper: 2 };
+    for (const [f, n] of Object.entries(minimum)) expect(spikeLines(files[f as keyof typeof files]).length, f).toBeGreaterThanOrEqual(n);
+  });
+
+  it('C-38 the helper\'s shared origin marker sits at the key-storage site: inside identityKeyForApp, or in the comment immediately above the store.put in getOrCreateIdentity', () => {
+    expect(markerAtKeyStorage(read(HELPER))).toBe(true);
+  });
+
+  it('C-38 the helper\'s header comment no longer says, without qualification, that the private key never leaves the device: it says the key cannot be exported and that any script on the same origin can use it', () => {
+    const header = headerComment(read(HELPER));
+    expect(header.length).toBeGreaterThan(0);
+    expect(header).toMatch(/export/i);
+    expect(header).toMatch(/same[- ]origin/i);
+  });
+
+  it('C-49 / C-38 (G2 self-check) the marker matchers on concrete inputs', () => {
+    const src = [
+      '// header line one',
+      '// The key cannot be exported, but any script on the same origin can use it.',
+      '',
+      'import x from "y";',
+      '// SPIKE: per-app limiter; never auth/challenge:rateLimited',
+      '// rateLimited on a plain comment does not count',
+      'export function identityKeyForApp(appId: string): string {',
+      '  // SPIKE: shared origin — every hosted app can use this key',
+      '  return PREFIX + appId;',
+      '}',
+      'async function getOrCreateIdentity() {',
+      '  // SPIKE: software custody',
+      '  //   continued',
+      '  await store.put(key, record);',
+      '}',
+    ].join('\n');
+    expect(spikeLines(src)).toHaveLength(3);
+    expect(hasMarker(src, 'per-app', 'rateLimited')).toBe(true);
+    expect(hasMarker(src, 'per-app', 'missing')).toBe(false);
+    expect(hasMarker(src, 'does not count')).toBe(false);
+    expect(headerComment(src)).toMatch(/same origin/);
+    expect(headerComment(src)).not.toMatch(/SPIKE/);
+    expect(markerAtKeyStorage(src)).toBe(true);
+    const abovePut = src.replace('// SPIKE: shared origin — every hosted app can use this key', '// nothing').replace('// SPIKE: software custody', '// SPIKE: shared origin, software custody');
+    expect(markerAtKeyStorage(abovePut)).toBe(true);
+    const elsewhere = src.replace('  // SPIKE: shared origin — every hosted app can use this key', '  // nothing').replace('import x from "y";', 'import x from "y";\n// SPIKE: shared origin');
+    expect(markerAtKeyStorage(elsewhere)).toBe(false);
   });
 });
+
+/** Lines that carry a `// SPIKE:` marker. */
+function spikeLines(src: string): string[] {
+  return src.split('\n').filter((l) => l.includes('// SPIKE:'));
+}
+/** True when one `// SPIKE:` line contains every phrase (C-49: same line). */
+function hasMarker(src: string, ...phrases: string[]): boolean {
+  return spikeLines(src).some((l) => phrases.every((p) => l.includes(p)));
+}
+/** The leading `//` comment block of a file, before the first non-comment line. */
+function headerComment(src: string): string {
+  const out: string[] = [];
+  for (const l of src.split('\n')) {
+    if (!l.trim().startsWith('//')) break;
+    out.push(l);
+  }
+  return out.join('\n');
+}
+/** C-38 placement: a `// SPIKE: … shared origin` line inside identityKeyForApp, or in the comment run directly above a `store.put(`. */
+function markerAtKeyStorage(src: string): boolean {
+  const lines = src.split('\n');
+  const fn = lines.findIndex((l) => /function identityKeyForApp\s*\(/.test(l));
+  const fnEnd = fn === -1 ? -1 : lines.findIndex((l, i) => i > fn && /^}\s*$/.test(l));
+  return lines.some((l, i) => {
+    if (!(l.includes('// SPIKE:') && l.includes('shared origin'))) return false;
+    if (fn !== -1 && i > fn && i < fnEnd) return true;
+    let j = i + 1;
+    while (j < lines.length && lines[j].trim().startsWith('//')) j++;
+    return j < lines.length && lines[j].includes('store.put(');
+  });
+}

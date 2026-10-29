@@ -300,6 +300,48 @@ describe('HTTP status mapping (S-50)', () => {
   });
 });
 
+describe('statusForCode amendment (C-45)', () => {
+  it('C-45 statusForCode("unsupportedExtension") === 422 (a SPEC §8.3 standard code)', () => {
+    expect(statusForCode('unsupportedExtension')).toBe(422);
+  });
+});
+
+describe('envelope shape: RFC 3339 timestamps and parentThreadId (C-43)', () => {
+  const base = (): Record<string, unknown> => ({ id: 'x', type: CHALLENGE_TYPE, payload: {}, issuedAt: '2031-03-04T05:06:07.000Z' });
+  it('C-43 checkFrameworkShape refuses a non-RFC-3339 issuedAt/expiresAt and a non-string parentThreadId, naming the member', () => {
+    const bads: Array<[string, Record<string, unknown>]> = [
+      ['issuedAt', { ...base(), issuedAt: 'Tue, 04 Mar 2031 05:06:07 GMT' }],
+      ['issuedAt', { ...base(), issuedAt: '2031-03-04T05:06:07.000' }],
+      ['issuedAt', { ...base(), issuedAt: '2031-03-04' }],
+      ['issuedAt', { ...base(), issuedAt: '2031-00-04T05:06:07Z' }],
+      ['expiresAt', { ...base(), expiresAt: '2031-13-01T00:00:00Z' }],
+      ['expiresAt', { ...base(), expiresAt: '2031-03-32T00:00:00Z' }],
+      ['expiresAt', { ...base(), expiresAt: '2031-03-04T05:06:07' }],
+      ['parentThreadId', { ...base(), parentThreadId: 7 }],
+      ['parentThreadId', { ...base(), parentThreadId: null }],
+    ];
+    for (const [member, b] of bads) {
+      const r = checkFrameworkShape(b);
+      expect(typeof r, JSON.stringify(b)).toBe('string');
+      expect(r, JSON.stringify(b)).toContain(member);
+    }
+  });
+
+  it('C-43 checkFrameworkShape accepts Z and ±hh:mm offsets, fractional seconds, and a string parentThreadId', () => {
+    for (const issuedAt of ['2031-03-04T05:06:07Z', '2031-03-04T05:06:07.123Z', '2031-03-04T05:06:07+02:00', '2031-03-04T05:06:07-05:30']) {
+      expect(checkFrameworkShape({ ...base(), issuedAt }), issuedAt).toBeNull();
+    }
+    expect(checkFrameworkShape({ ...base(), expiresAt: '2031-03-04T07:06:07+02:00', parentThreadId: 'thread-1' })).toBeNull();
+  });
+
+  it('C-43 a challenge with an RFC 2822 issuedAt → 400 malformedRequest with no store call beyond P1', async () => {
+    const env = makeEnv();
+    const b = { ...(chDoc(env) as Record<string, unknown>), issuedAt: 'Tue, 04 Mar 2031 05:06:07 GMT' };
+    expectError(await post(env, b), 400, 'malformedRequest', false);
+    expect(env.fake.callIds()).toEqual(['P1']);
+  });
+});
+
 describe('nothing touches email (S-49)', () => {
   it('S-49 a full sign-in only talks to PostgREST P1–P13 (no app_login_codes, no email API); sources reference no RESEND_API_KEY, app_login_codes or email sending', async () => {
     const env = makeEnv();

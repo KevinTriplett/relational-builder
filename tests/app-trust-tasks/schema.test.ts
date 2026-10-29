@@ -145,3 +145,40 @@ describe('subsetSchemaValidator / assertSchemaSupported (S-25)', () => {
     expect(ok(SCHEMAS.authenticateResponse, { ...base, tokens: { ...base.tokens, expiresIn: 0 } })).toBe(false);
   });
 });
+
+describe('the schema check walks every sub-schema and fails closed (C-41)', () => {
+  it('C-41 an unsupported keyword under items, propertyNames, a schema-valued additionalProperties, or nested under properties.*.items makes assertSchemaSupported throw', () => {
+    const bad: Array<[string, unknown]> = [
+      ['items:{enum}', { type: 'array', items: { enum: ['a'] } }],
+      ['items:{oneOf}', { items: { oneOf: [{}] } }],
+      ['propertyNames:{const}', { propertyNames: { const: 'x' } }],
+      ['additionalProperties:{not}', { additionalProperties: { not: {} } }],
+      ['properties.a.items.anyOf', { properties: { a: { items: { anyOf: [] } } } }],
+      ['$defs.X.items.const (deep)', { $defs: { X: { type: 'array', items: { type: 'string', const: 'x' } } } }],
+    ];
+    for (const [name, s] of bad) {
+      const e = thrownBy(() => assertSchemaSupported(s));
+      expect(String((e as Error)?.message ?? e), name).toMatch(/enum|oneOf|const|not|anyOf/);
+    }
+  });
+
+  it('C-41 the validator asserts the whole schema first: an unsupported keyword under items throws whatever the value (never true)', () => {
+    thrownBy(() => subsetSchemaValidator.validate({ type: 'array', items: { type: 'string', enum: ['a'] } }, ['zzz']));
+    thrownBy(() => subsetSchemaValidator.validate({ type: 'array', items: { type: 'string', enum: ['a'] } }, ['a']));
+    // The value never reaches the nested keyword (not an array), and the validator must still throw.
+    thrownBy(() => subsetSchemaValidator.validate({ type: 'object', properties: { a: { items: { anyOf: [] } } } }, 'not-an-object'));
+  });
+
+  it('C-41 required and properties consider own properties only: required ["toString"] is not satisfied by {}', () => {
+    expect(ok({ type: 'object', required: ['toString'] }, {})).toBe(false);
+    expect(ok({ type: 'object', required: ['toString'] }, { toString: 'own' })).toBe(true);
+    // A value key that is only an inherited name of the `properties` map (toString) is an
+    // additional property, not a declared one (N-5: `k in props`).
+    expect(ok({ type: 'object', properties: { a: { type: 'string' } } }, { toString: 'x' })).toBe(true);
+    expect(ok({ type: 'object', properties: { a: { type: 'string' } }, additionalProperties: false }, { toString: 'x' })).toBe(false);
+  });
+
+  it('C-41 the request and response schemas of both pinned tasks still pass assertSchemaSupported', () => {
+    for (const [name, s] of Object.entries(SCHEMAS)) expect(() => assertSchemaSupported(s), name).not.toThrow();
+  });
+});

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { AuthChallenge_v0_1, type TrustTaskDocument } from '@openvtc/trust-tasks';
 import { DEFAULT_CHALLENGE_TTL_MS } from '../../supabase/functions/app-trust-tasks/core.ts';
 import { APP_A, LOCAL_VID, expectError, makeEnv, post } from './helpers.ts';
-import { challengeDoc, mintDidKey, signAs } from './producer.ts';
+import { signerFromPrivateKey } from '@openvtc/trust-tasks-proof';
+import { challengeDoc, fixedSeed, mintDidKey, signAs } from './producer.ts';
 
 type ChallengeResponse = TrustTaskDocument<{ challenge: string; sessionId: string; expiresAt: string }>;
 
@@ -163,5 +164,19 @@ describe('challenge pipeline (S-42 for auth/challenge/0.1)', () => {
     (d.payload as Record<string, unknown>).extra = 'not-allowed';
     expectError(await post(env, d), 400, 'malformedRequest');
     expect(env.fake.callsOf('P2')).toHaveLength(0);
+  });
+});
+
+describe('challenge proof is eddsa-jcs-2022 / Ed25519 only (C-42)', () => {
+  it('C-42 oracle 1: a challenge carrying an optional ecdsa-jcs-2019 proof by a P-256 did:key (subject-agnostic) → 422 proofInvalid; nothing stored', async () => {
+    const env = makeEnv();
+    const seed = fixedSeed(40);
+    const signer = signerFromPrivateKey('p256', seed);
+    const p256 = { did: signer.did, verificationMethod: signer.verificationMethod, seed, signer };
+    const signed = signAs(doc(env, p256.did, { subject: null }), p256, { proofPurpose: 'authentication', created: env.clock.now() });
+    expect((signed.proof as { cryptosuite?: string }).cryptosuite).toBe('ecdsa-jcs-2019');
+    expectError(await post(env, signed), 422, 'proofInvalid');
+    expect(env.fake.callsOf('P2')).toHaveLength(0);
+    expect(env.fake.tables.app_tt_challenges).toHaveLength(0);
   });
 });

@@ -23,7 +23,8 @@ import {
 import {
   APP_A, APP_B, KEY_B, LOCAL_VID, authDoc, expectError, getChallenge, makeEnv, post, signInFlow, type Env,
 } from './helpers.ts';
-import { mintDidKey, signAs } from './producer.ts';
+import { signTrustTask, signerFromPrivateKey } from '@openvtc/trust-tasks-proof';
+import { fixedSeed, mintDidKey, signAs, unsignedAuthenticateDoc, type TestIdentity } from './producer.ts';
 
 interface AuthResponsePayload {
   session: { id: string; subject: string; issuedAt: string; expiresAt: string; amr?: string[]; acr?: string; actor?: string };
@@ -573,6 +574,172 @@ describe('replay semantics end-to-end (S-48, S-11, S-24)', () => {
     const r = await post(env, doc, APP_B, KEY_B);
     expectError(r, 409, 'idConflict');
     expect(JSON.stringify(r.body)).not.toContain(token);
+    expect(sessionCount(env)).toBe(1);
+  });
+});
+
+/** A P-256 did:key identity (ecdsa-jcs-2019 when signed) — the producer only mints Ed25519. */
+function p256Identity(): TestIdentity {
+  const seed = fixedSeed(40);
+  const signer = signerFromPrivateKey('p256', seed);
+  return { did: signer.did, verificationMethod: signer.verificationMethod, seed, signer };
+}
+
+describe('verification is eddsa-jcs-2022 / Ed25519 only, with the did:key\'s own method (C-42)', () => {
+  it('C-42 oracle 1: an authenticate signed ecdsa-jcs-2019 by a P-256 did:key → 422 proofInvalid; no member row, no P3, no P5', async () => {
+    const env = makeEnv();
+    const p256 = p256Identity();
+    expect(p256.did).toMatch(/^did:key:zDn/);
+    const c = await getChallenge(env, mintDidKey(), { subject: null });
+    const d = authDoc(env, p256, c);
+    expect((d.proof as { cryptosuite?: string }).cryptosuite).toBe('ecdsa-jcs-2019');
+    expectError(await post(env, d), 422, 'proofInvalid');
+    expect(env.fake.tables.app_members).toHaveLength(0);
+    expect(env.fake.callsOf('P3')).toHaveLength(0);
+    expect(env.fake.callsOf('P5')).toHaveLength(0);
+    expect(sessionCount(env)).toBe(0);
+  });
+
+  it('C-42 oracle 2: an Ed25519 authenticate whose proof names verificationMethod did + "#not-the-key" → 422 proofInvalid; no P3, no P5', async () => {
+    const env = makeEnv();
+    const id = mintDidKey();
+    const c = await getChallenge(env, id);
+    const bare = unsignedAuthenticateDoc(id.did, { id: crypto.randomUUID(), now: env.clock.now(), recipient: LOCAL_VID, ...c });
+    const d = signTrustTask(bare, { ...id.signer, verificationMethod: `${id.did}#not-the-key` }, { proofPurpose: 'authentication', created: env.clock.now() });
+    expect((d.proof as { verificationMethod?: string }).verificationMethod).toBe(`${id.did}#not-the-key`);
+    expectError(await post(env, d), 422, 'proofInvalid');
+    expect(env.fake.callsOf('P3')).toHaveLength(0);
+    expect(env.fake.callsOf('P5')).toHaveLength(0);
+    expect(env.fake.tables.app_members).toHaveLength(0);
+  });
+
+  it('C-42 oracle 3: the normal producer flow (verificationMethod did#<multikey>, eddsa-jcs-2022) → 200', async () => {
+    const env = makeEnv();
+    const { identity, doc, res } = await signInFlow(env);
+    expect((doc.proof as { verificationMethod?: string }).verificationMethod).toBe(`${identity.did}#${identity.did.slice('did:key:'.length)}`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+});
+
+describe('envelope timestamps must be RFC 3339; parentThreadId a string (C-43)', () => {
+  async function refused(env: Env, mutate: (d: Record<string, unknown>) => void, member: string) {
+    const id = mintDidKey();
+    const c = await getChallenge(env, id);
+    const bare = unsignedAuthenticateDoc(id.did, { id: crypto.randomUUID(), now: env.clock.now(), recipient: LOCAL_VID, ...c }) as unknown as Record<string, unknown>;
+    mutate(bare);
+    const d = signAs(bare as unknown as TrustTaskDocument<Record<string, unknown>>, id, { proofPurpose: 'authentication', created: env.clock.now() });
+    const err = expectError(await post(env, d), 400, 'malformedRequest', false);
+    expect(err.payload.message ?? '', `message names ${member}`).toContain(member);
+    expect(env.fake.callsOf('P3')).toHaveLength(0);
+    expect(env.fake.callsOf('P5')).toHaveLength(0);
+  }
+
+  it('C-43 issuedAt in RFC 2822 form ("Tue, 04 Mar 2031 05:06:07 GMT", which Date.parse reads as now) → 400 malformedRequest; zero P3 and P5', async () => {
+    const env = makeEnv();
+    expect(Date.parse('Tue, 04 Mar 2031 05:06:07 GMT')).toBe(env.clock.ms);
+    await refused(env, (d) => void (d.issuedAt = 'Tue, 04 Mar 2031 05:06:07 GMT'), 'issuedAt');
+  });
+
+  it('C-43 an offset-less issuedAt ("2031-03-04T05:06:07.000") → 400 malformedRequest whatever TZ is; zero P3 and P5', async () => {
+    const saved = process.env.TZ;
+    try {
+      for (const tz of ['UTC', 'America/Los_Angeles', 'Asia/Tokyo']) {
+        process.env.TZ = tz;
+        const env = makeEnv();
+        await refused(env, (d) => void (d.issuedAt = '2031-03-04T05:06:07.000'), 'issuedAt');
+      }
+    } finally {
+      if (saved === undefined) delete process.env.TZ;
+      else process.env.TZ = saved;
+    }
+  });
+
+  it('C-43 expiresAt with month 13 ("2031-13-01T00:00:00Z") → 400 malformedRequest; zero P3 and P5', async () => {
+    await refused(makeEnv(), (d) => void (d.expiresAt = '2031-13-01T00:00:00Z'), 'expiresAt');
+  });
+
+  it('C-43 parentThreadId: 7 → 400 malformedRequest; zero P3 and P5', async () => {
+    await refused(makeEnv(), (d) => void (d.parentThreadId = 7), 'parentThreadId');
+  });
+
+  it('C-43 an issuedAt with a +02:00 offset (the same instant as now) passes the shape check and completes', async () => {
+    const env = makeEnv();
+    const id = mintDidKey();
+    const c = await getChallenge(env, id);
+    const d = authDoc(env, id, c, { issuedAt: '2031-03-04T07:06:07+02:00' });
+    const res = await post(env, d);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+});
+
+describe('replay retention cap and release/record failures end to end (C-39, C-40)', () => {
+  it('C-39 oracle 2: an authenticate with expiresAt "9999-12-31T23:59:59Z" completes; P5 until_at ≤ now + window + 120 s, a plain YYYY-…Z string', async () => {
+    const env = makeEnv();
+    const id = mintDidKey();
+    const c = await getChallenge(env, id);
+    const res = await post(env, authDoc(env, id, c, { expiresAt: '9999-12-31T23:59:59Z' }));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const untilAt = env.fake.callsOf('P5')[0].body as { until_at: string };
+    expect(untilAt.until_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
+    expect(untilAt.until_at.startsWith('+')).toBe(false);
+    expect(Date.parse(untilAt.until_at)).toBeLessThanOrEqual(env.clock.ms + DEFAULT_ACCEPTANCE_WINDOW_MS + 120_000);
+    expect(Date.parse(env.fake.tables.app_tt_replay[0].until_at)).toBeLessThanOrEqual(env.clock.ms + DEFAULT_ACCEPTANCE_WINDOW_MS + 120_000);
+  });
+
+  it('C-40 oracle 1: P3 rejects and P10 rejects → 503 unavailable, retryable, issuer localVid (never 500); the record stays in flight so the identical resend gets 202', async () => {
+    const env = makeEnv();
+    const id = mintDidKey();
+    const c = await getChallenge(env, id);
+    env.fake.failAll('P3', 'reject');
+    env.fake.failAll('P10', 'reject');
+    const d = authDoc(env, id, c);
+    const res = await post(env, d);
+    expect(res.status, JSON.stringify(res.body)).toBe(503);
+    expectError(res, 503, 'unavailable', true);
+    expect(env.fake.callsOf('P10')).toHaveLength(1);
+    env.fake.failAll('P3', null);
+    env.fake.failAll('P10', null);
+    expect((await post(env, d)).status).toBe(202);
+  });
+
+  it('C-40 oracle 1: P3 rejects and P10 answers 503 → 503 unavailable, retryable, issuer localVid', async () => {
+    const env = makeEnv();
+    const id = mintDidKey();
+    const c = await getChallenge(env, id);
+    env.fake.failAll('P3', 'reject');
+    env.fake.failAll('P10', 503);
+    const res = await post(env, authDoc(env, id, c));
+    expectError(res, 503, 'unavailable', true);
+    expect(env.fake.callsOf('P10')).toHaveLength(1);
+  });
+
+  it('C-40 oracle 3: P9 failing once then succeeding → the identical resend gets 200 and the retained response', async () => {
+    const env = makeEnv();
+    const id = mintDidKey();
+    const c = await getChallenge(env, id);
+    env.fake.script('P9', 503);
+    const d = authDoc(env, id, c);
+    const first = await post(env, d);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(env.fake.callsOf('P9')).toHaveLength(2);
+    const again = await post(env, d);
+    expect(again.status).toBe(200);
+    expect(again.body).toEqual(first.body);
+    expect(sessionCount(env)).toBe(1);
+  });
+
+  it('C-40 oracle 4: P9 failing twice → the first answer is still 200 with the token; the identical resend gets 202', async () => {
+    const env = makeEnv();
+    const id = mintDidKey();
+    const c = await getChallenge(env, id);
+    env.fake.script('P9', 503, 'reject');
+    const d = authDoc(env, id, c);
+    const first = await post(env, d);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect((first.body as AuthResponse).payload.tokens.accessToken).toBe(env.fake.tables.app_sessions[0].token);
+    expect(env.fake.callsOf('P9')).toHaveLength(2);
+    const again = await post(env, d);
+    expect(again.status).toBe(202);
     expect(sessionCount(env)).toBe(1);
   });
 });

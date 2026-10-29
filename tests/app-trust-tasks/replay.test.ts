@@ -214,3 +214,89 @@ describe('PostgresReplayGuard is app-scoped (S-24)', () => {
     expect(fake.callsOf('P10')[0].query.app_id).toBe(`eq.${APP_B}`);
   });
 });
+
+// C-39 / C-40 add optional ReplayGuardDeps members (acceptanceWindowMs, log). They are passed
+// through a variable, not an object literal, so this file type-checks before and after they exist.
+function guardWith(extra: { acceptanceWindowMs?: number; log?: (event: string, detail?: Record<string, unknown>) => void }) {
+  const clock = new TestClock();
+  const fake = makeFake(clock);
+  const deps = { ...fake.deps(), appId: APP_A, ...extra };
+  return { clock, fake, guard: new PostgresReplayGuard(deps) };
+}
+
+describe('replay retention is capped at the acceptance window (C-39)', () => {
+  const YEAR_9999 = Date.parse('9999-12-31T23:59:59Z');
+
+  it('C-39 oracle 1: claim with retainUntil in year 9999 and now = N writes until_at = ISO(N + 300 000 + 120 000)', async () => {
+    const { clock, fake, guard } = guardWith({});
+    expect(await guard.claim(ID, D1, YEAR_9999, clock.ms)).toEqual({ kind: 'fresh' });
+    await settle();
+    expect(fake.callsOf('P5')[0].body).toMatchObject({ until_at: new Date(clock.ms + 420_000).toISOString() });
+    expect(fake.tables.app_tt_replay[0].until_at).toBe(new Date(clock.ms + 420_000).toISOString());
+  });
+
+  it('C-39 oracle 4: acceptanceWindowMs 10 000 → the cap is now + 130 000', async () => {
+    const { clock, fake, guard } = guardWith({ acceptanceWindowMs: 10_000 });
+    await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+    expect(fake.tables.app_tt_replay[0].until_at).toBe(new Date(clock.ms + 130_000).toISOString());
+    // Below the cap, retainUntil + pad still wins.
+    await guard.claim('doc-2', D1, clock.ms + 10_000, clock.ms);
+    expect(fake.tables.app_tt_replay.find((r) => r.doc_id === 'doc-2')!.until_at).toBe(new Date(clock.ms + 70_000).toISOString());
+  });
+
+  it('C-39 the cap uses claim\'s now argument, not a clock: a claim with now = N + 1 000 caps at N + 1 000 + 420 000', async () => {
+    const { clock, fake, guard } = guardWith({});
+    await guard.claim(ID, D1, YEAR_9999, clock.ms + 1_000);
+    expect(fake.tables.app_tt_replay[0].until_at).toBe(new Date(clock.ms + 1_000 + 420_000).toISOString());
+  });
+});
+
+describe('release is total; recordResponse retries once (C-40)', () => {
+  it('C-40 oracle 2: release with a rejecting fetch (P10) resolves and logs replay.release_failed once, naming no id or digest', async () => {
+    const logs: Array<{ event: string; detail?: Record<string, unknown> }> = [];
+    const { clock, fake, guard } = guardWith({ log: (event, detail) => void logs.push({ event, detail }) });
+    await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+    fake.failAll('P10', 'reject');
+    await expect(guard.release(ID, D1)).resolves.toBeUndefined();
+    expect(fake.callsOf('P10')).toHaveLength(1);
+    expect(logs.filter((l) => l.event === 'replay.release_failed')).toHaveLength(1);
+    expect(JSON.stringify(logs)).not.toContain(ID);
+    expect(JSON.stringify(logs)).not.toContain(D1);
+  });
+
+  it('C-40 release answered 503 by P10 resolves and logs replay.release_failed once (P10 issued at most once)', async () => {
+    const logs: Array<{ event: string; detail?: Record<string, unknown> }> = [];
+    const { clock, fake, guard } = guardWith({ log: (event, detail) => void logs.push({ event, detail }) });
+    await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+    fake.failAll('P10', 503);
+    await expect(guard.release(ID, D1)).resolves.toBeUndefined();
+    expect(fake.callsOf('P10')).toHaveLength(1);
+    expect(logs.filter((l) => l.event === 'replay.release_failed')).toHaveLength(1);
+  });
+
+  it('C-40 release without a log dep still resolves on a rejecting fetch', async () => {
+    const { clock, fake, guard } = guardWith({});
+    await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+    fake.failAll('P10', 'reject');
+    await expect(guard.release(ID, D1)).resolves.toBeUndefined();
+  });
+
+  it('C-40 recordResponse: P9 failing once (503 or rejected) is retried once and the response is stored', async () => {
+    for (const fault of [503, 'reject'] as const) {
+      const { clock, fake, guard } = guardWith({});
+      await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+      fake.script('P9', fault);
+      await expect(guard.recordResponse(ID, { done: true })).resolves.toBeUndefined();
+      expect(fake.callsOf('P9'), String(fault)).toHaveLength(2);
+      expect(fake.tables.app_tt_replay[0].response).toEqual({ done: true });
+    }
+  });
+
+  it('C-40 recordResponse: P9 failing twice throws after exactly two attempts', async () => {
+    const { clock, fake, guard } = guardWith({});
+    await guard.claim(ID, D1, clock.ms + 300_000, clock.ms);
+    fake.script('P9', 503, 'reject');
+    await rejectionOf(Promise.resolve().then(() => guard.recordResponse(ID, { r: 1 })));
+    expect(fake.callsOf('P9')).toHaveLength(2);
+  });
+});

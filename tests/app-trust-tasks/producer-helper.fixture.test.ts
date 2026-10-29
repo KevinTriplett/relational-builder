@@ -9,8 +9,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { AuthAuthenticate_v0_3, AuthChallenge_v0_1, TRUST_TASK_ERROR_TYPE_URI, canonicalJson, type TrustTaskDocument } from '@openvtc/trust-tasks';
 import { DataIntegrityProofVerifier, publicKeyFromDidKey, signTrustTask, signerFromPrivateKey } from '@openvtc/trust-tasks-proof';
+import * as helperModule from '../../src/kit/files/lib/trust-signin.ts';
 import {
-  IDENTITY_KEY,
   MEMBER_TOKEN_KEY,
   TrustSignInError,
   buildAuthenticateDocument,
@@ -21,11 +21,13 @@ import {
   signDocument,
   signIn,
   type DeviceIdentity,
+  type GetIdentityOptions,
   type IdentityStore,
+  type SignInOptions,
 } from '../../src/kit/files/lib/trust-signin.ts';
 import { handleTrustTask } from '../../supabase/functions/app-trust-tasks/core.ts';
 import { responseHeaders } from '../../supabase/functions/app-trust-tasks/status.ts';
-import { APP_A, KEY_A, LOCAL_VID, T0, makeEnv, rejectionOf } from './helpers.ts';
+import { APP_A, APP_B, KEY_A, LOCAL_VID, T0, makeEnv, rejectionOf } from './helpers.ts';
 import { authenticateDoc, challengeDoc, fixedSeed, mintDidKey } from './producer.ts';
 
 const HELPER_SRC = readFileSync(fileURLToPath(new URL('../../src/kit/files/lib/trust-signin.ts', import.meta.url)), 'utf8');
@@ -38,9 +40,31 @@ function softwareIdentity(seed = fixedSeed()): DeviceIdentity & { seed: Uint8Arr
   return { did: s.did, verificationMethod: s.verificationMethod, custody: 'software', kind: 'bootstrap', sign: async (b: Uint8Array) => s.signer.sign(b), seed };
 }
 
-function memoryStore(): IdentityStore & { data: Map<string, unknown> } {
+/** In-memory IdentityStore that records every key it is asked for (C-37 oracles 1, 4, 5). */
+function memoryStore(): IdentityStore & { data: Map<string, unknown>; calls: Array<{ op: 'get' | 'put'; key: string }> } {
   const data = new Map<string, unknown>();
-  return { data, get: async (k) => data.get(k), put: async (k, v) => void data.set(k, v) };
+  const calls: Array<{ op: 'get' | 'put'; key: string }> = [];
+  return {
+    data,
+    calls,
+    get: async (k) => (calls.push({ op: 'get', key: k }), data.get(k)),
+    put: async (k, v) => void (calls.push({ op: 'put', key: k }), data.set(k, v)),
+  };
+}
+
+// C-37 changes the helper's §2 surface (IDENTITY_KEY removed; IDENTITY_KEY_PREFIX,
+// identityKeyForApp and GetIdentityOptions.appId added). Reached through the module
+// namespace so a missing export fails the test that needs it, not the whole file.
+const helperExports = helperModule as unknown as Record<string, unknown>;
+const V1_KEY = 'rb.trust-signin.identity.v1';
+function identityKeyForApp(appId: unknown): string {
+  const f = helperExports.identityKeyForApp;
+  if (typeof f !== 'function') throw new Error('identityKeyForApp is not exported by trust-signin.ts (C-37)');
+  return (f as (a: unknown) => string)(appId);
+}
+/** getOrCreateIdentity with the C-37 required appId (typed loosely so invalid ids can be passed). */
+function identityFor(appId: unknown, o: Omit<GetIdentityOptions, 'appId'> = {}): Promise<DeviceIdentity> {
+  return getOrCreateIdentity({ ...o, appId } as GetIdentityOptions);
 }
 
 function* walk(v: unknown, seen = new Set<unknown>()): Generator<unknown> {
@@ -57,14 +81,15 @@ describe('signing fixture (S-61 oracle)', () => {
     const doc = buildAuthenticateDocument(id.did, RECIPIENT, NOW, 'doc-fixed-1', { challenge: 'C'.repeat(43), sessionId: 'sess-fixed-1' });
     for (const created of [new Date('2031-03-04T05:06:07.000Z'), new Date('2031-03-04T05:06:07.250Z')]) {
       const mine = await signDocument(doc, id, created);
-      const ref = signTrustTask(doc, signerFromPrivateKey('ed25519', id.seed), { proofPurpose: 'authentication', created });
+      // C-51: the helper's TrustTaskDocument is a local structural type; view it as the upstream one.
+      const ref = signTrustTask(doc as unknown as TrustTaskDocument<typeof doc.payload>, signerFromPrivateKey('ed25519', id.seed), { proofPurpose: 'authentication', created });
       expect(JSON.stringify(mine)).toBe(JSON.stringify(ref));
     }
     const signed = await signDocument(doc, id, new Date('2031-03-04T05:06:07.000Z'));
     expect(signed.proof).toMatchObject({
       type: 'DataIntegrityProof', cryptosuite: 'eddsa-jcs-2022', created: '2031-03-04T05:06:07Z', verificationMethod: id.verificationMethod, proofPurpose: 'authentication',
     });
-    expect(await new DataIntegrityProofVerifier({ now: () => T0 }).verify(signed)).toBe(true);
+    expect(await new DataIntegrityProofVerifier({ now: () => T0 }).verify(signed as unknown as TrustTaskDocument<typeof signed.payload>)).toBe(true);
   });
 
   it('S-61 signDocument refuses a document whose issuer is not the identity\'s did, without signing', async () => {
@@ -101,24 +126,24 @@ describe('key custody (S-60)', () => {
     expect(await r).toBe(true);
   });
 
-  it('S-60 getOrCreateIdentity mints a non-extractable WebCrypto did:key (kind bootstrap), persists it under IDENTITY_KEY, reloads the same identity, and does no network I/O', async () => {
+  it('S-60 / C-37 getOrCreateIdentity mints a non-extractable WebCrypto did:key (kind bootstrap), persists it under identityKeyForApp(appId), reloads the same identity, and does no network I/O', async () => {
     const fetchSpy = vi.fn(() => { throw new Error('network'); });
     vi.stubGlobal('fetch', fetchSpy);
     const store = memoryStore();
-    const a = await getOrCreateIdentity({ store });
+    const KEY = identityKeyForApp(APP_A);
+    const a = await identityFor(APP_A, { store });
     expect(a.custody).toBe('webcrypto');
     expect(a.kind).toBe('bootstrap');
     expect(a.did).toMatch(/^did:key:z6Mk[1-9A-HJ-NP-Za-km-z]+$/);
     expect(a.verificationMethod).toBe(`${a.did}#${a.did.slice('did:key:'.length)}`);
-    expect(store.data.has(IDENTITY_KEY)).toBe(true);
-    expect(IDENTITY_KEY).toBe('rb.trust-signin.identity.v1');
-    const record = store.data.get(IDENTITY_KEY);
+    expect([...store.data.keys()]).toEqual([KEY]);
+    const record = store.data.get(KEY);
     expect(JSON.stringify(record)).toMatch(/bootstrap/);
     const keys = [...walk(record)].filter((v): v is CryptoKey => typeof CryptoKey !== 'undefined' && v instanceof CryptoKey);
     const priv = keys.filter((k) => k.type === 'private');
     expect(priv.length).toBeGreaterThan(0);
     for (const k of priv) expect(k.extractable).toBe(false);
-    const b = await getOrCreateIdentity({ store });
+    const b = await identityFor(APP_A, { store });
     expect(b.did).toBe(a.did);
     const msg = new TextEncoder().encode('hello');
     const sig = await b.sign(msg);
@@ -131,24 +156,26 @@ describe('key custody (S-60)', () => {
   it('S-60 without WebCrypto Ed25519 and without allowInMemoryFallback → TrustSignInError("unsupported", false, 0)', async () => {
     vi.spyOn(crypto.subtle, 'generateKey').mockRejectedValue(new DOMException('Unrecognized name', 'NotSupportedError'));
     const store = memoryStore();
-    const e = await rejectionOf(getOrCreateIdentity({ store }));
+    const e = await rejectionOf(identityFor(APP_A, { store }));
     expect(e).toBeInstanceOf(TrustSignInError);
     expect(e).toMatchObject({ code: 'unsupported', retryable: false, status: 0 });
     expect(store.data.size).toBe(0);
   });
 
-  it('S-60 with allowInMemoryFallback the identity is a software did:key (custody "software") stored as a 32-byte seed, and signs verifiably', async () => {
+  it('S-60 / C-37 with allowInMemoryFallback the identity is a software did:key (custody "software") stored as a 32-byte seed under identityKeyForApp(appId), and signs verifiably', async () => {
     vi.spyOn(crypto.subtle, 'generateKey').mockRejectedValue(new DOMException('Unrecognized name', 'NotSupportedError'));
     const store = memoryStore();
-    const id = await getOrCreateIdentity({ store, allowInMemoryFallback: true });
+    const KEY = identityKeyForApp(APP_A);
+    const id = await identityFor(APP_A, { store, allowInMemoryFallback: true });
     expect(id.custody).toBe('software');
     expect(id.kind).toBe('bootstrap');
     expect(id.did).toMatch(/^did:key:z6Mk/);
-    const record = store.data.get(IDENTITY_KEY);
+    expect([...store.data.keys()]).toEqual([KEY]);
+    const record = store.data.get(KEY);
     expect(JSON.stringify(record)).toContain('software');
     const seeds = [...walk(record)].filter((v): v is Uint8Array => v instanceof Uint8Array && v.length === 32);
     expect(seeds.length).toBeGreaterThan(0);
-    const again = await getOrCreateIdentity({ store, allowInMemoryFallback: true });
+    const again = await identityFor(APP_A, { store, allowInMemoryFallback: true });
     expect(again.did).toBe(id.did);
     const msg = new Uint8Array([1, 2, 3]);
     expect(ed25519.verify(await id.sign(msg), msg, publicKeyFromDidKey(id.did)!.bytes)).toBe(true);
@@ -283,6 +310,141 @@ describe('signIn wire shape (S-61)', () => {
     expect(out.member_token).toBe(env.fake.tables.app_sessions[0].token);
     expect(out.did).toBe(id.did);
     expect(out.member).toMatchObject({ did: id.did, email: null, name: null, id: env.fake.tables.app_members[0].id });
+  });
+});
+
+describe('per-app device identity (C-37)', () => {
+  const PREFIX = 'rb.trust-signin.identity.v2:';
+  const noV1 = (store: ReturnType<typeof memoryStore>) => {
+    for (const c of store.calls) expect(c.key, `${c.op} used the retired shared key`).not.toBe(V1_KEY);
+  };
+
+  it('C-37 IDENTITY_KEY_PREFIX is rb.trust-signin.identity.v2: and identityKeyForApp(appId) = prefix + appId.trim().toLowerCase()', () => {
+    expect(helperExports.IDENTITY_KEY_PREFIX).toBe(PREFIX);
+    expect(identityKeyForApp(APP_A)).toBe(`${PREFIX}${APP_A}`);
+    expect(identityKeyForApp(APP_B)).toBe(`${PREFIX}${APP_B}`);
+    expect(identityKeyForApp(APP_A)).not.toBe(identityKeyForApp(APP_B));
+  });
+
+  it('C-37 oracle 3: upper- and lower-case (and padded) spellings of one uuid give the same key and the same identity', async () => {
+    const lower = 'abcdef01-2345-4678-9abc-def012345678';
+    const upper = lower.toUpperCase();
+    expect(upper).not.toBe(lower);
+    expect(identityKeyForApp(upper)).toBe(identityKeyForApp(lower));
+    expect(identityKeyForApp(upper)).toBe(`${PREFIX}${lower}`);
+    expect(identityKeyForApp(`  ${upper}  `)).toBe(identityKeyForApp(lower));
+    const store = memoryStore();
+    const a = await identityFor(lower, { store });
+    const b = await identityFor(upper, { store });
+    expect(b.did).toBe(a.did);
+    expect([...store.data.keys()]).toEqual([identityKeyForApp(lower)]);
+  });
+
+  it('C-37 oracles 1, 2, 5: apps A and B on one store get different DIDs, stored under exactly identityKeyForApp(A) and identityKeyForApp(B); a repeat for A returns A\'s DID; no store call uses the v1 key', async () => {
+    const store = memoryStore();
+    const a = await identityFor(APP_A, { store });
+    const b = await identityFor(APP_B, { store });
+    expect(b.did).not.toBe(a.did);
+    expect([...store.data.keys()].sort()).toEqual([identityKeyForApp(APP_A), identityKeyForApp(APP_B)].sort());
+    expect((store.data.get(identityKeyForApp(APP_A)) as { did?: unknown }).did).toBe(a.did);
+    expect((store.data.get(identityKeyForApp(APP_B)) as { did?: unknown }).did).toBe(b.did);
+    const again = await identityFor(APP_A, { store });
+    expect(again.did).toBe(a.did);
+    expect(store.data.size).toBe(2);
+    const allowed = new Set([identityKeyForApp(APP_A), identityKeyForApp(APP_B)]);
+    for (const c of store.calls) expect(allowed.has(c.key), `${c.op} ${c.key}`).toBe(true);
+    noV1(store);
+  });
+
+  it('C-37 oracle 4: appId "", blank, or a non-string → TrustSignInError("invalidAppId", false, 0) with zero store calls; identityKeyForApp throws the same', async () => {
+    for (const bad of ['', '   ', '\t\n', 42, undefined, null, { id: APP_A }]) {
+      const store = memoryStore();
+      const e = await rejectionOf(identityFor(bad, { store, allowInMemoryFallback: true }));
+      expect(e, JSON.stringify(bad)).toBeInstanceOf(TrustSignInError);
+      expect(e, JSON.stringify(bad)).toMatchObject({ code: 'invalidAppId', retryable: false, status: 0 });
+      expect(store.calls, JSON.stringify(bad)).toEqual([]);
+      let thrown: unknown;
+      try {
+        identityKeyForApp(bad);
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown, JSON.stringify(bad)).toBeInstanceOf(TrustSignInError);
+      expect(thrown, JSON.stringify(bad)).toMatchObject({ code: 'invalidAppId', retryable: false, status: 0 });
+    }
+  });
+
+  it('C-37 oracle 5: IDENTITY_KEY is no longer exported, and the helper source never names the v1 key', () => {
+    expect('IDENTITY_KEY' in helperExports).toBe(false);
+    expect(HELPER_SRC).not.toContain(V1_KEY);
+  });
+
+  it('C-37 oracle 6: signIn with identityStore and no identity signs with the app\'s own identity; a second signIn for app B on the same store uses a different issuer', async () => {
+    const store = memoryStore();
+    const run = async (appId: string) => {
+      const { fetch: f, requests } = scriptedFetch([challengeResponseFor, (r) => authResponseFor(r)]);
+      const options = { recipient: RECIPIENT, identityStore: store, fetch: f, now: () => NOW, storage: { setItem: () => {} } } as SignInOptions;
+      const out = await signIn(BASE, appId, appId === APP_A ? KEY_A : 'key-b', options);
+      expect(requests).toHaveLength(2);
+      expect(new URL(requests[0].url).searchParams.get('app_id')).toBe(appId);
+      return { out, issuers: requests.map((r) => (r.body as { issuer: string }).issuer) };
+    };
+    const a = await run(APP_A);
+    const didA = (store.data.get(identityKeyForApp(APP_A)) as { did?: string } | undefined)?.did;
+    expect(didA).toMatch(/^did:key:z6Mk/);
+    expect(a.issuers).toEqual([didA, didA]);
+    expect(a.out.did).toBe(didA);
+    const b = await run(APP_B);
+    const didB = (store.data.get(identityKeyForApp(APP_B)) as { did?: string } | undefined)?.did;
+    expect(b.issuers).toEqual([didB, didB]);
+    expect(didB).not.toBe(didA);
+    noV1(store);
+  });
+});
+
+describe('signIn checks that a response answers its request (C-52)', () => {
+  const withBody = (base: (req: Recorded) => Response, patch: Record<string, unknown>) => async (req: Recorded) => {
+    const body = (await base(req).json()) as Record<string, unknown>;
+    return jsonRes(200, { ...body, ...patch });
+  };
+  const run = (script: Array<(req: Recorded) => Response | Promise<Response>>, stored: string[] = []) => {
+    const f = scriptedFetch(script as Array<(req: Recorded) => Response>);
+    const p = signIn(BASE, APP_A, KEY_A, { recipient: RECIPIENT, identity: softwareIdentity(), fetch: f.fetch, now: () => NOW, storage: { setItem: (k) => void stored.push(k) } });
+    return { p, requests: f.requests };
+  };
+
+  it('C-52 a 200 challenge response with threadId ≠ the request id → TrustSignInError("transport", false, 200), and no second POST', async () => {
+    const { p, requests } = run([withBody(challengeResponseFor, { threadId: 'not-the-request-id' })]);
+    const e = await rejectionOf(p);
+    expect(e).toBeInstanceOf(TrustSignInError);
+    expect(e).toMatchObject({ code: 'transport', retryable: false, status: 200 });
+    expect(requests).toHaveLength(1);
+  });
+
+  it('C-52 a 200 challenge response typed as the authenticate #response → TrustSignInError("transport", false, 200), and no second POST', async () => {
+    const { p, requests } = run([withBody(challengeResponseFor, { type: AuthAuthenticate_v0_3.RESPONSE_TYPE_URI })]);
+    const e = await rejectionOf(p);
+    expect(e).toBeInstanceOf(TrustSignInError);
+    expect(e).toMatchObject({ code: 'transport', retryable: false, status: 200 });
+    expect(requests).toHaveLength(1);
+  });
+
+  it('C-52 an authenticate 200 typed as the challenge #response → TrustSignInError("transport", false, 200), and member_token is not written', async () => {
+    const stored: string[] = [];
+    const { p, requests } = run([challengeResponseFor, withBody((r) => authResponseFor(r), { type: AuthChallenge_v0_1.RESPONSE_TYPE_URI })], stored);
+    const e = await rejectionOf(p);
+    expect(e).toBeInstanceOf(TrustSignInError);
+    expect(e).toMatchObject({ code: 'transport', retryable: false, status: 200 });
+    expect(requests).toHaveLength(2);
+    expect(stored).toEqual([]);
+  });
+
+  it('C-52 an authenticate 200 whose threadId ≠ the authenticate request id → TrustSignInError("transport", false, 200), and member_token is not written', async () => {
+    const stored: string[] = [];
+    const { p } = run([challengeResponseFor, withBody((r) => authResponseFor(r), { threadId: 'not-the-request-id' })], stored);
+    const e = await rejectionOf(p);
+    expect(e).toMatchObject({ code: 'transport', retryable: false, status: 200 });
+    expect(stored).toEqual([]);
   });
 });
 

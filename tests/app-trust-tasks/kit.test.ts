@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { KIT_FILES, kitFilesUsed, withKitFiles } from '../../src/kit/index.ts';
 import { PINNED_VERSIONS, cdnUrl } from '../../src/preview/bundler/versions.ts';
+import { materializeSource } from '../../src/project/build-for-publish.ts';
+import type { FileEntry } from '../../src/project/virtual-fs.ts';
 
 const HELPER = fileURLToPath(new URL('../../src/kit/files/lib/trust-signin.ts', import.meta.url));
 
@@ -23,17 +25,36 @@ describe('kit wiring (S-63)', () => {
     expect(cdnUrl('@noble/curves/ed25519.js')).toContain('@noble/curves@2.4.0/ed25519.js');
   });
 
-  it('S-63 the helper uses bare specifiers only: @openvtc/trust-tasks (type-only), @openvtc/trust-tasks-proof, @noble/curves/ed25519.js — no npm: or @/ aliases', () => {
+  it('S-63 / C-51 the helper uses bare specifiers only: @openvtc/trust-tasks-proof and @noble/curves/ed25519.js — no npm: or @/ aliases', () => {
     const src = readFileSync(HELPER, 'utf8');
-    const imports = [...src.matchAll(/^\s*(import|export)\s+(type\s+)?[^'"]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => ({ typeOnly: !!m[2], spec: m[3] }));
+    const imports = [...src.matchAll(/^\s*(import|export)\s+(type\s+)?[^'"]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[3]);
     const dynamic = [...src.matchAll(/import\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]);
-    const specs = [...imports.map((i) => i.spec), ...dynamic];
+    const specs = [...imports, ...dynamic];
     for (const s of specs) {
       expect(s, s).not.toMatch(/^npm:|^@\//);
-      expect(['@openvtc/trust-tasks', '@openvtc/trust-tasks-proof', '@noble/curves/ed25519.js']).toContain(s);
+      expect(['@openvtc/trust-tasks-proof', '@noble/curves/ed25519.js']).toContain(s);
     }
     expect(specs).toContain('@openvtc/trust-tasks-proof');
     expect(specs).toContain('@noble/curves/ed25519.js');
-    for (const i of imports.filter((x) => x.spec === '@openvtc/trust-tasks')) expect(i.typeOnly, 'type-only import of @openvtc/trust-tasks').toBe(true);
+  });
+
+  it('C-51 the helper has no import or export (type-only included) from \'@openvtc/trust-tasks\'', () => {
+    const src = readFileSync(HELPER, 'utf8');
+    expect(src).not.toMatch(/\bfrom\s*['"]@openvtc\/trust-tasks['"]/);
+    expect(src).not.toMatch(/\bimport\s*\(?\s*['"]@openvtc\/trust-tasks['"]/);
+  });
+
+  it('C-51 materializing a project that uses the helper does not list @openvtc/trust-tasks in package.json (collectBarePackages), but does list the proof package', () => {
+    const at = 0;
+    const entry = (path: string, content: string): FileEntry => ({ path, content, language: 'typescript', createdAt: at, updatedAt: at });
+    const out = materializeSource([
+      entry('/src/main.tsx', "import App from './App';\nexport default App;\n"),
+      entry('/src/App.tsx', "import { signIn } from '@/lib/trust-signin';\nexport default function App() { void signIn; return null; }\n"),
+    ]);
+    const files = Object.fromEntries(out.map((f) => [f.path, f.content]));
+    expect(files['/src/lib/trust-signin.ts']).toBe(readFileSync(HELPER, 'utf8'));
+    const deps = (JSON.parse(files['/package.json']) as { dependencies: Record<string, string> }).dependencies;
+    expect(Object.keys(deps)).toContain('@openvtc/trust-tasks-proof');
+    expect(Object.keys(deps)).not.toContain('@openvtc/trust-tasks');
   });
 });
