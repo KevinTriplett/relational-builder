@@ -252,3 +252,78 @@ To validate payloads (see OVTC-21), the implementer had to find the schemas in `
 ### OVTC-41 · `positive` · With the source pinned, the libraries were straightforward to build on
 
 With the package versions pinned and the source available, the whole server (challenge, authenticate, replay, status mapping, member upsert) went from failing tests to green with no changes to the library and no forks. Every gap found was in documentation or a small API shape. The `rt/` runtime source was readable enough to answer each question directly. That's a good sign for adopters, but it depends on OVTC-3 (reading source at a tag), which the docs should not require.
+
+## Phase 4 — review (2026-10-28)
+
+Found by the review agent (R) while reviewing the implementation; copied from `REVIEW-1.md` §6. Each was probed unless it says otherwise.
+
+### OVTC-42 · `bug` · `release` runs outside any try, so a failing release escapes `consumeInbound` and strands the claim
+
+After a handler returns a refusal with `retryable: true`, `consumeInbound` runs `await claim?.guard.release?.(doc.id, claim.digest)` with no `try` (`RT/consume.ts:533-535`). That is exactly when the store is likely to be failing, because the usual reason for a retryable refusal is a store outage.
+
+**What happens.**
+- A rejecting `release` turns the whole call into a thrown exception, and the record stays in flight.
+- A consumer that maps exceptions to 500 answers `internalError`/non-retryable where the handler said `unavailable`/retryable.
+- Every bit-for-bit retry then gets `duplicate`, `inFlight: true` (HTTPS 202) until the record expires.
+- The `ReplayGuard` interface (`RT/replay.ts:86-132`) also gives `release` no way to report failure.
+
+**Probe.** A Postgres-backed guard whose challenge store and DELETE both reject: first answer 500. After recovery, the identical resend gets 202. This is the same family as OVTC-9, but on the runtime's own call.
+
+**Fix.** Wrap `release` like `settle` wraps `recordResponse`, and return the handler's refusal unchanged. Document that guards should make `release` total.
+
+### OVTC-43 · `bug` · A swallowed `recordResponse` failure makes a completed execution look in progress
+
+`settle` swallows `recordResponse` errors (`RT/consume.ts:553-564`), and the comment says the duplicate "is still absorbed". It is absorbed, but the guard's record is left with no response. Every identical resend is then answered `duplicate`, `inFlight: true` (`RT/replay.ts` verdict). HTTPS 0.2 §4 maps that to 202, which binding §4.1 defines as "this document … its execution has not finished". That is false: execution finished.
+
+**Probe.** Success with P9 failing, then an identical resend: 200, then 202.
+
+**Fix.** On a `recordResponse` failure, ask the guard to mark the record "completed, nothing retained", so it answers `inFlight: false` and HTTPS 204. For example, add an optional `markCompleted(id)` method, or call `recordResponse(id, undefined)` in a second best-effort attempt.
+
+### OVTC-44 · `bug` · `recordExpiry` lets the producer choose an unbounded retention
+
+`recordExpiry` returns `expiresAt` whenever it is present (`RT/freshness.ts:173-176`). That holds even when `expiresAt` is far later than the point after which `validateFreshness` would refuse the document anyway (`issuedAt + maxAgeMs + skewMs`, `:143`). SPEC §7.2 *Bounding the record* only requires retention "at least as long as it remains willing to execute". Retention past that point is pure cost, and here it is chosen by an unauthenticated producer.
+
+**Probe.** `expiresAt: "9999-12-31T23:59:59Z"` gave `retainUntil` ≈ year 10000. `new Date(...).toISOString()` then yields the extended form `+010000-01-01T…`, which most stores will not parse.
+
+**Fix.** Return `min(expiresAt, issuedAt + maxAgeMs + skewMs)` when both exist. This also fixes OVTC-7 if `skewMs` is included. Optionally, let a consumer cap acceptance of `expiresAt` beyond its window.
+
+### OVTC-45 · `bug` · Envelope timestamps are parsed with `Date.parse`, so non-RFC-3339 values are accepted
+
+`validateFreshness` (`RT/freshness.ts:128`) and `validateBasic` (`RT/document.ts:246`) use `Date.parse` and call the result "not a valid RFC 3339 timestamp" only when it is `NaN`.
+
+**Probe.**
+- `issuedAt: "Tue, 04 Mar 2031 05:06:07 GMT"` (RFC 2822) is accepted and the task executes.
+- An offset-less `"2031-03-04T05:06:07.000"` is parsed in the **server's local time zone**, so the verdict depends on host TZ.
+- `PF/verifier.js:11, 65` enforces a strict dateTimeStamp regex on `proof.created`, so the two packages disagree.
+
+**Fix.** Use one strict RFC 3339 parser, offset required, for `issuedAt` and `expiresAt`. Reject anything else as `malformedRequest`.
+
+### OVTC-46 · `bug` · `DataIntegrityProofVerifier` ignores the verificationMethod fragment
+
+The verifier binds `verificationMethod.split("#")[0]` to `issuer` and decodes the key from the DID part (`PF/verifier.js:79-83`). Whatever follows `#` is never checked. A proof naming `did:key:z6Mk…#not-the-key` verifies.
+
+**Probe.** 200.
+
+SPEC §4.7.3 item 3 requires the verification method to be one the controller document lists for the purpose. A `did:key` document lists only `did:key:<mb>#<mb>`. This is distinct from OVTC-38, which is about `publicKeyFromDidKey` accepting a fragment.
+
+**Fix.** Require the fragment to be absent or equal to the multibase key.
+
+### OVTC-47 · `bug` (minor) · A throwing payload validator's exception text reaches the wire
+
+When `payloadPolicy.validate.validate` throws, its `e.message` is appended to the `malformedRequest` message sent to the producer (`RT/consume.ts:385-403`). The same function deliberately sends a constant for verifier failures, citing SPEC §12.4 (`:435-445`). A third-party JSON Schema engine's exception can name file paths, remote `$ref` hosts or internal state. Not probed for leakage; read from source.
+
+**Fix.** Send a constant for a throw, log the detail, and keep returned `errors` arrays as they are.
+
+### OVTC-48 · `docs` · The verifier's default cryptosuite set is not documented
+
+`new DataIntegrityProofVerifier()` accepts `ecdsa-jcs-2019` with P-256 and P-384 keys, as well as `eddsa-jcs-2022` (`PF/verifier.js:8, 26`). This matches SPEC §4.7.1, which says SHOULD verify P-256. But a consumer that intends Ed25519-only, as ours did, has to read the dist to learn that it must pass `cryptosuites: ["eddsa-jcs-2022"]`.
+
+**Probe.** A P-256 `did:key` signed in through our consumer.
+
+**Fix.** List the default and the option in the README's "What is checked".
+
+### OVTC-49 · `docs` · `auth/authenticate/0.3` does not require `proofPurpose: authentication` on the request proof
+
+SPEC §4.7.3 lets a specification require a purpose. `auth/authenticate/0.3` requires `authentication` only for later session-key proofs (`specs/auth/authenticate/0.3/spec.md:140`). The login proof itself is left open, so a consumer accepts `assertionMethod`, `capabilityInvocation` and `capabilityDelegation` logins. Not probed beyond `core.authenticate.test.ts:203-210`, which shows `assertionMethod` → 200.
+
+**Fix.** State it in the task's `proofRequirement`, since the login proof *is* an authentication, and have the runtime enforce a spec-declared purpose.
