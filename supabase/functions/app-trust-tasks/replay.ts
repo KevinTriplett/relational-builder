@@ -44,7 +44,7 @@ export interface ReplayGuardDeps extends PostgrestDeps {
    * now + acceptanceWindowMs + 2·DEFAULT_SKEW_MS. Default DEFAULT_ACCEPTANCE_WINDOW_MS.
    */
   acceptanceWindowMs?: number;
-  /** C-40: structured log sink (`replay.release_failed`). Never given an id or digest. */
+  /** C-40, C-59: structured log sink (`replay.release_failed`, `replay.record_failed`). Never given an id or digest. */
   log?: (event: string, detail?: Record<string, unknown>) => void;
 }
 
@@ -122,6 +122,12 @@ export class PostgresReplayGuard implements ReplayGuard {
       } catch {
         failure = "fetch rejected";
       }
+    }
+    // C-59: make the stuck in-flight record visible (failure only — no id, no digest).
+    try {
+      this.log?.("replay.record_failed", { failure });
+    } catch {
+      // a throwing log sink must not replace recordResponse's own error
     }
     throw new Error(`replay recordResponse failed twice (${failure})`);
   }

@@ -77,10 +77,10 @@ export interface RateLimiter {
   hit(appId: string, nowMs: number): boolean;
 }
 
-/** N-3: distinct app ids the limiter keeps before it evicts closed windows. */
+/** C-57: the most buckets (distinct app ids) the limiter ever holds. */
 const MAX_BUCKETS = 10_000;
 
-// SPIKE: in-isolate per-app rate limiter (120/min per isolate, not per source IP/DID; a transport 429, never auth/challenge:rateLimited; any APP_KEY holder can spend an app's budget) — C-46.
+// SPIKE: in-isolate per-app rate limiter (120/min per isolate, not per source IP/DID; a transport 429, never auth/challenge:rateLimited; anyone who knows an app_id can spend its budget, even with a wrong key) — C-46, C-54.
 /** Fixed-window in-isolate limiter, same semantics as app-data's isRateLimited (S-40). */
 export class InMemoryRateLimiter implements RateLimiter {
   private readonly limit: number;
@@ -91,13 +91,17 @@ export class InMemoryRateLimiter implements RateLimiter {
   }
   /** Record one request for `appId` at `nowMs`; true when this request exceeds the limit. */
   hit(appId: string, nowMs: number): boolean {
-    // N-3: the key is an unauthenticated appId, so bound the map — past MAX_BUCKETS distinct
-    // ids, drop every bucket whose window has closed (they would be reset on next hit anyway).
-    if (this.buckets.size >= MAX_BUCKETS && !this.buckets.has(appId)) {
-      for (const [k, b] of this.buckets) if (nowMs - b.windowStart > 60_000) this.buckets.delete(k);
-    }
+    // C-57: the key is an unauthenticated appId, so the map is bounded at MAX_BUCKETS with no
+    // full scan. A closed window is deleted and re-inserted, so insertion order is window-start
+    // order; a new id arriving at the cap evicts the first (oldest) bucket. O(1) amortized.
     const bucket = this.buckets.get(appId);
     if (!bucket || nowMs - bucket.windowStart > 60_000) {
+      if (bucket) {
+        this.buckets.delete(appId);
+      } else if (this.buckets.size >= MAX_BUCKETS) {
+        const oldest = this.buckets.keys().next();
+        if (!oldest.done) this.buckets.delete(oldest.value);
+      }
       this.buckets.set(appId, { count: 1, windowStart: nowMs });
       return 1 > this.limit;
     }
@@ -532,7 +536,7 @@ export const SUPPORTED_SCHEMA_KEYWORDS: readonly string[] = [
 const LOCAL_REF = /^#\/\$defs\/([^/]+)$/;
 // JSON-Schema `date-time` / RFC 3339: an offset (or Z) is required, `T`/`Z` are
 // case-insensitive, and the month must be 01–12 (range is checked after the match).
-const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:Z|[+-]\d{2}:\d{2})$/i;
+const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:Z|[+-](\d{2}):(\d{2}))$/i;
 const SUPPORTED = new Set(SUPPORTED_SCHEMA_KEYWORDS);
 
 // The keywords the subset understands, with the value types they take in the bundled schemas.
@@ -571,12 +575,27 @@ function typeMatches(type: string, value: unknown): boolean {
   return false;
 }
 
+// C-55: days in `month` (1-12) of `year`, Gregorian leap years.
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return leap ? 29 : 28;
+  }
+  return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
+}
+
+// S-25 / C-55: the one date-time rule (format "date-time" and envelope issuedAt/expiresAt).
 function isDateTime(value: string): boolean {
   const m = DATE_TIME.exec(value);
   if (!m) return false;
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+  const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number);
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > daysInMonth(year, month)) return false;
+  if (hour > 23 || minute > 59) return false;
+  // SPIKE: leap second refused (ss = 60 fails, although RFC 3339 §5.6 allows it; the runtime's Date.parse rejects it anyway, OVTC-52) — C-55.
+  if (second > 59) return false;
+  if (m[8] !== undefined && (Number(m[8]) > 23 || Number(m[9]) > 59)) return false;
+  return true;
 }
 
 /** S-25: throw if `schema` uses a keyword outside SUPPORTED_SCHEMA_KEYWORDS or a non-local $ref. */
@@ -587,21 +606,73 @@ export function assertSchemaSupported(schema: unknown): void {
 // C-41: recurse into every sub-schema position at any depth. `items`, `propertyNames` and a
 // schema-valued `additionalProperties` are ONE sub-schema each; `properties` and `$defs` are
 // maps of name → sub-schema. A boolean sub-schema carries no keywords.
+// C-58: every keyword value is type-checked, so a reshaped schema throws a controlled S-25 error
+// naming the keyword — never a TypeError, never a silent `true`.
 function checkSchemaNode(node: unknown): void {
   if (!isPlainObject(node)) return; // annotation primitives / arrays carry no keywords
   const n = node as Record<string, unknown>;
   for (const key of Object.keys(n)) {
     if (!SUPPORTED.has(key)) throw new Error(`S-25: unsupported schema keyword "${key}"`);
-    if (key === "$ref" && (typeof n.$ref !== "string" || !LOCAL_REF.test(n.$ref))) {
-      throw new Error(`S-25: non-local $ref "${String(n.$ref)}"`);
-    }
+    checkKeywordValue(key, n[key]);
   }
   for (const slot of ["items", "propertyNames", "additionalProperties"] as const) {
     if (Object.hasOwn(n, slot)) checkSchemaNode(n[slot]);
   }
   for (const map of ["properties", "$defs"] as const) {
-    const v = n[map];
-    if (isPlainObject(v)) for (const sub of Object.values(v)) checkSchemaNode(sub);
+    if (Object.hasOwn(n, map)) for (const sub of Object.values(n[map] as object)) checkSchemaNode(sub);
+  }
+}
+
+const SCHEMA_TYPES = new Set(["string", "number", "integer", "boolean", "null", "object", "array"]);
+
+function isSubSchema(v: unknown): boolean {
+  return typeof v === "boolean" || isPlainObject(v);
+}
+
+function isNonNegativeInteger(v: unknown): boolean {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0;
+}
+
+// C-58: the value type each supported keyword takes. Annotations are not checked.
+function checkKeywordValue(key: string, v: unknown): void {
+  const bad = (what: string): never => {
+    throw new Error(`S-25: schema keyword "${key}" must be ${what}`);
+  };
+  switch (key) {
+    case "items":
+    case "propertyNames":
+    case "additionalProperties":
+      if (!isSubSchema(v)) bad("a schema object or a boolean");
+      return;
+    case "properties":
+    case "$defs":
+      if (!isPlainObject(v) || !Object.values(v).every(isSubSchema)) {
+        bad("an object whose values are schema objects or booleans");
+      }
+      return;
+    case "type":
+      if (typeof v !== "string" || !SCHEMA_TYPES.has(v)) bad("one JSON type name");
+      return;
+    case "required":
+      if (!Array.isArray(v) || !v.every((r) => typeof r === "string")) bad("an array of strings");
+      return;
+    case "minLength":
+    case "maxLength":
+    case "minItems":
+    case "minProperties":
+      if (!isNonNegativeInteger(v)) bad("a non-negative integer");
+      return;
+    case "minimum":
+      if (typeof v !== "number" || !Number.isFinite(v)) bad("a finite number");
+      return;
+    case "pattern":
+    case "format":
+      if (typeof v !== "string") bad("a string");
+      return;
+    case "$ref":
+      if (typeof v !== "string") bad("a string");
+      if (!LOCAL_REF.test(v as string)) throw new Error(`S-25: non-local $ref "${String(v)}"`);
+      return;
   }
 }
 
