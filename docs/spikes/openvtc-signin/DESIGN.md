@@ -116,6 +116,8 @@ export interface PostgrestDeps { fetch: typeof fetch; restUrl: (path: string) =>
 export interface RateLimiter { hit(appId: string, nowMs: number): boolean; }
 /** Fixed 60 s window per appId, app-data semantics (S-40). C-57: at most MAX_BUCKETS (10 000) buckets, oldest evicted, no full scan. */
 export class InMemoryRateLimiter implements RateLimiter { constructor(limitPerMin?: number); hit(appId: string, nowMs: number): boolean; }
+/** C-61: canonical textual uuid, either case; checked in handleTrustTask after the 401 and before the limiter (mismatch → 403, no hit, no call). */
+export const APP_ID_PATTERN: RegExp;   // /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export interface CoreDeps extends PostgrestDeps {
   now: () => Date;                 // the only clock (S-42 clock seam)
   localVid: string;                // S-30
@@ -178,6 +180,8 @@ export function generateChallenge(randomBytes?: (n: number) => Uint8Array): stri
 ### `replay.ts`
 ```ts
 export const DEFAULT_RETENTION_PAD_MS: number;   // = DEFAULT_SKEW_MS (60_000) from the runtime
+/** C-60: what P9 stores for a completed success; the success document itself is never stored. */
+export const COMPLETED_RECORD: Readonly<{ completed: true }>;
 export interface ReplayGuardDeps extends PostgrestDeps {
   appId: string; retentionPadMs?: number;
   acceptanceWindowMs?: number;   // C-39: until_at cap = now + window + 2·DEFAULT_SKEW_MS; default DEFAULT_ACCEPTANCE_WINDOW_MS
@@ -187,7 +191,7 @@ export interface ReplayGuardDeps extends PostgrestDeps {
 export class PostgresReplayGuard implements ReplayGuard {
   constructor(deps: ReplayGuardDeps);
   claim(id: string, digest: string, retainUntil: number | undefined, now: number): Promise<ReplayVerdict>;
-  recordResponse(id: string, response: unknown): Promise<void>;   // C-40: P9, one retry, then throw
+  recordResponse(id: string, response: unknown): Promise<void>;   // C-40: P9, one retry, then throw; C-60: a non-error response is stored as COMPLETED_RECORD
   release(id: string, digest: string): Promise<void>;              // C-40: never throws
 }
 ```
@@ -210,6 +214,8 @@ export const CORS_HEADERS: Readonly<Record<string, string>>;  // == app-data COR
 export interface HttpResult { status: number; body?: unknown; log?: string; }
 /** Binding 0.2 §4 table, as amended in S-50. */
 export function statusForCode(code: string): number;
+/** C-60: exported (was private) so replay.ts uses the same test. True for a trust-task-error document. */
+export function isErrorDocument(v: unknown): v is ErrorResponse;
 /** S-50 outcome mapping; genericMalformed builds the suppressed body. */
 export function mapOutcomeToHttp(outcome: ConsumeOutcome<unknown>, genericMalformed: () => ErrorResponse): HttpResult;
 /** CORS + Cache-Control: no-store (+ Content-Type: application/json iff body). */
@@ -276,14 +282,14 @@ export function shortDid(did: string): string;
 | P6 | `GET /app_tt_replay?doc_id=eq.{id}&select=app_id,digest,response,until_at` | — | — | 200 `[row]` or `[]` | — |
 | P7 | `DELETE /app_tt_replay?doc_id=eq.{id}&until_at=lte.{iso}` | — | — | 204 | — |
 | P8 | `DELETE /app_tt_replay?until_at=lt.{iso}` | — | — | 204 | — |
-| P9 | `PATCH /app_tt_replay?doc_id=eq.{id}&app_id=eq.{appId}` | `return=minimal` | `{response:<document>}` | 204 | — |
+| P9 | `PATCH /app_tt_replay?doc_id=eq.{id}&app_id=eq.{appId}` | `return=minimal` | `{response:<error document>}`, or `{response:{"completed":true}}` for a success (C-60) | 204 | — |
 | P10 | `DELETE /app_tt_replay?doc_id=eq.{id}&app_id=eq.{appId}&digest=eq.{digest}&response=is.null` | — | — | 204 | — |
 | P11 | `GET /app_members?app_id=eq.{appId}&did=eq.{did}&select=id,email,name,did` | — | — | 200 `[row]` or `[]` | — |
 | P12 | `POST /app_members` | `return=representation` | `{app_id,did,email:null,name:null}` | 201 `[{id,app_id,email,name,did,created_at}]`, `id` a fresh uuid | 409 duplicate `(app_id,did)` where `did` is not null |
 | P13 | `POST /app_sessions` | `return=minimal` | `{token,app_id,member_id,expires_at}` | 201, empty | 409 duplicate `token` |
 
 When each call is issued:
-- **P1:** once per request, after the 401 and 429 checks.
+- **P1:** once per request, after the 401 and 429 checks. *(C-61)* Also after the `app_id` shape check: a malformed id never reaches P1, and P1 receives the lowercased id.
 - **P2:** on challenge success.
 - **P3:** once per authenticate that reaches the handler.
 - **P4:** fire-and-forget after P2.
@@ -371,3 +377,11 @@ C-37 to C-52 are now applied in the `SPIKE-SPEC.md` body (R2-1). Changelog C-53 
 **Recorded, not changed.** Expiry-before-mismatch retryability and record release (C-53); the replay-record boundary millisecond and the cap's dependence on `requireIssuedAt: true` (C-56). See R13.
 
 - **R13 Boundary millisecond (C-56, L-30).** At `until_at` exactly, the record is expired while freshness still accepts; the handler re-runs and only the single-use challenge prevents a second session. Upstream as OVTC-50.
+
+## 8. REVIEW-3 amendments (2026-10-29)
+
+Changelog C-60 to C-62 answer R3-4 and R3-2. Both are applied in the `SPIKE-SPEC.md` body. **§2 additions:** `APP_ID_PATTERN` (`core.ts`), `COMPLETED_RECORD` (`replay.ts`), and `isErrorDocument` (`status.ts`, exported; it was already there as a private function). There are no signature changes. Behaviour changes:
+- *No retained token (C-60).* `recordResponse` sends P9 `{response: COMPLETED_RECORD}` for any response that is not a `trust-task-error`, and sends the error document unchanged otherwise. `resolveConflict` returns `priorResponse` only for a stored error document. Any other non-null `response` gives `{kind: "duplicate", inFlight: false}`, which the existing S-50 branch maps to 204 with no body. `replay.ts` imports `isErrorDocument` from `status.ts` (`status.ts` imports nothing local, so there is no cycle). `status.ts`'s mapping and `core.ts` are unchanged.
+- *`app_id` shape (C-61).* `handleInner`: if `!appId || !appKey` → 401; then if `!APP_ID_PATTERN.test(appId)` → `plainError(403, "Unknown app or wrong key")`; then `appId = appId.toLowerCase()` and continue exactly as before (limiter, P1, …) with the normalised value. `InMemoryRateLimiter` is not touched. The limiter's `// SPIKE:` line is not touched either (its C-54 claim still holds). The C-57 comment inside `hit` should say that `handleTrustTask` admits only 36-character uuid keys, so the entry bound is also a byte bound.
+- *Helper (C-62).* No change. The existing 202/204 → `noResponse` (retryable) path is confirmed.
+- **R14 Lost success response (C-60).** If a producer loses the 200 and re-sends identical bytes, it gets 204 and no token. It must start again with a new challenge, and the first session row stays orphaned until its TTL. This is accepted: the helper always starts again with new documents, and the alternative (replaying the token) is the bearer-credential exposure R3-4 describes.
