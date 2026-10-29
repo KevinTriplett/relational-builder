@@ -3,27 +3,54 @@
 // Ships into generated apps via the kit, so it uses bare imports only (pinned to esm.sh by
 // the preview bundler's import map).
 //
-// The browser mints its own Ed25519 did:key (a VTI "bootstrap" client identity). The private
-// key never leaves this device: it is a non-extractable WebCrypto key in IndexedDB, and only
-// signatures go over the network.
+// The browser mints its own Ed25519 did:key (a VTI "bootstrap" client identity), one per app
+// (C-37). The private key is a non-extractable WebCrypto key in IndexedDB: it cannot be
+// exported and is never sent — only signatures go over the network. But any script on the
+// same origin can open that database and *use* the key to sign (C-38): on a shared hosting
+// origin, another app or a preview can sign in as this person. See SPIKE-SPEC C-38.
 
-import type { TrustTaskDocument } from '@openvtc/trust-tasks';
 import { canonicalBytes, didKeyFromPublicKey, toMultibase } from '@openvtc/trust-tasks-proof';
 import { ed25519 } from '@noble/curves/ed25519.js';
 
 /** localStorage key the email path already uses for the member session (S-61). */
 export const MEMBER_TOKEN_KEY = 'member_token';
-/** IndexedDB key under which the bootstrap identity is persisted (S-60). */
-export const IDENTITY_KEY = 'rb.trust-signin.identity.v1';
+/** Prefix of the per-app IndexedDB key under which a bootstrap identity is persisted (C-37). */
+export const IDENTITY_KEY_PREFIX = 'rb.trust-signin.identity.v2:';
 
 const CHALLENGE_TYPE = 'https://trusttasks.org/spec/auth/challenge/0.1';
 const AUTHENTICATE_TYPE = 'https://trusttasks.org/spec/auth/authenticate/0.3';
 const MEMBER_EXT = 'org.relationalbuilder.cloud';
 
+/** A proof as eddsa-jcs-2022 produces it (SPEC §4.7). */
+export interface TrustTaskProof {
+  type: string;
+  cryptosuite: string;
+  created: string;
+  verificationMethod: string;
+  proofPurpose: string;
+  proofValue: string;
+}
+
+/**
+ * A Trust Task document, declared locally so the helper does not import `@openvtc/trust-tasks`
+ * (C-51: even a type-only import puts that package in exported projects' package.json).
+ */
+export interface TrustTaskDocument<P> {
+  id: string;
+  type: string;
+  issuer?: string;
+  recipient?: string;
+  issuedAt?: string;
+  expiresAt?: string;
+  threadId?: string;
+  payload: P;
+  proof?: TrustTaskProof;
+}
+
 /** Where the private key lives: non-extractable WebCrypto, or raw bytes (software fallback). */
 export type Custody = 'webcrypto' | 'software';
 
-/** The browser's bootstrap identity (VTI-CLT-001…006); never leaves the device (S-60). */
+/** The browser's per-app bootstrap identity (VTI-CLT-001…005; 006 only against other origins, C-38) (S-60). */
 export interface DeviceIdentity {
   /** `did:key:z6Mk…` (Ed25519). */
   did: string;
@@ -44,6 +71,8 @@ export interface IdentityStore {
 
 /** Options for getOrCreateIdentity (S-60). */
 export interface GetIdentityOptions {
+  /** The app (cloud_apps.id) this identity belongs to; one identity per app (C-37). Required. */
+  appId: string;
   store?: IdentityStore;
   /** Permit @noble software keys when WebCrypto Ed25519 is unavailable. Default false. */
   allowInMemoryFallback?: boolean;
@@ -54,6 +83,8 @@ export interface SignInOptions {
   /** The auth service VID (env TRUST_TASKS_VID); both documents carry it as `recipient`. */
   recipient: string;
   identity?: DeviceIdentity;
+  /** Where the per-app identity is kept when `identity` is absent. Default indexedDbIdentityStore() (C-37). */
+  identityStore?: IdentityStore;
   fetch?: typeof fetch;
   now?: () => Date;
   randomUUID?: () => string;
@@ -164,10 +195,23 @@ function isRecord(v: unknown): v is IdentityRecord {
   return r.custody === 'software' && r.seed instanceof Uint8Array && r.seed.length === 32;
 }
 
-/** Load the persisted bootstrap identity or mint one; no network I/O (S-60, VTI-CLT-005). */
-export async function getOrCreateIdentity(options: GetIdentityOptions = {}): Promise<DeviceIdentity> {
+/**
+ * The IndexedDB key for `appId`'s identity: IDENTITY_KEY_PREFIX + appId.trim().toLowerCase()
+ * (C-37). Throws TrustSignInError('invalidAppId') for a non-string or blank appId.
+ */
+export function identityKeyForApp(appId: string): string {
+  if (typeof appId !== 'string' || appId.trim() === '') {
+    throw new TrustSignInError('invalidAppId', false, 0, 'appId must be a non-empty string');
+  }
+  // SPIKE: shared origin — every app hosted on this origin (and every same-origin preview) can open this database and sign with any app's key (C-38).
+  return IDENTITY_KEY_PREFIX + appId.trim().toLowerCase();
+}
+
+/** Load `appId`'s persisted bootstrap identity or mint one; no network I/O (S-60, C-37, VTI-CLT-005). */
+export async function getOrCreateIdentity(options: GetIdentityOptions): Promise<DeviceIdentity> {
+  const key = identityKeyForApp(options.appId); // before any store access (C-37)
   const store = options.store ?? indexedDbIdentityStore();
-  const existing = await store.get(IDENTITY_KEY);
+  const existing = await store.get(key);
   if (isRecord(existing)) return fromRecord(existing);
 
   let pair: CryptoKeyPair | undefined;
@@ -190,7 +234,7 @@ export async function getOrCreateIdentity(options: GetIdentityOptions = {}): Pro
     const seed = crypto.getRandomValues(new Uint8Array(32));
     record = { kind: 'bootstrap', custody: 'software', ...didFromPublicKey(ed25519.getPublicKey(seed)), seed };
   }
-  await store.put(IDENTITY_KEY, record);
+  await store.put(key, record);
   return fromRecord(record);
 }
 
@@ -261,6 +305,14 @@ function isTrustTaskError(v: unknown): v is ErrorBody {
   return typeof d.type === 'string' && d.type.split('#')[0].includes('/trust-task-error/') && typeof d.payload?.code === 'string';
 }
 
+// C-52: a 200 must answer *this* request — `<request type>#response` on the request's thread
+// (the helper sends no threadId, so the consumer's threadId is the request id).
+function answers(body: Record<string, unknown>, request: { id: string; type: string }): void {
+  if (body.type !== `${request.type}#response` || body.threadId !== request.id) {
+    throw new TrustSignInError('transport', false, 200, 'the response does not answer this request');
+  }
+}
+
 async function postDocument(fetchFn: typeof fetch, url: string, doc: unknown): Promise<Record<string, unknown>> {
   let res: Response;
   try {
@@ -301,7 +353,7 @@ export async function signIn(
   appKey: string,
   options: SignInOptions,
 ): Promise<SignInResult> {
-  const identity = options.identity ?? (await getOrCreateIdentity());
+  const identity = options.identity ?? (await getOrCreateIdentity({ appId, store: options.identityStore }));
   const fetchFn: typeof fetch = options.fetch ?? ((input, init) => fetch(input, init));
   const now = options.now ?? (() => new Date());
   const uuid = options.randomUUID ?? (() => crypto.randomUUID());
@@ -310,8 +362,10 @@ export async function signIn(
     `?app_id=${encodeURIComponent(appId)}&app_key=${encodeURIComponent(appKey)}`;
 
   // 1. Unsigned challenge request.
-  const challengeRes = payloadOf(await postDocument(fetchFn, url, buildChallengeDocument(identity.did, options.recipient, now(), uuid())));
-  const { challenge, sessionId } = challengeRes;
+  const challengeDoc = buildChallengeDocument(identity.did, options.recipient, now(), uuid());
+  const challengeBody = await postDocument(fetchFn, url, challengeDoc);
+  answers(challengeBody, challengeDoc);
+  const { challenge, sessionId } = payloadOf(challengeBody);
   if (typeof challenge !== 'string' || typeof sessionId !== 'string') {
     throw new TrustSignInError('transport', false, 200, 'unexpected challenge response');
   }
@@ -322,7 +376,9 @@ export async function signIn(
   const signed = await signDocument(doc, identity, t);
 
   // 3. Read the TokenBundle.
-  const authRes = payloadOf(await postDocument(fetchFn, url, signed));
+  const authBody = await postDocument(fetchFn, url, signed);
+  answers(authBody, signed);
+  const authRes = payloadOf(authBody);
   const tokens = authRes.tokens as { accessToken?: unknown } | undefined;
   const token = tokens?.accessToken;
   if (typeof token !== 'string' || token === '') {

@@ -33,6 +33,8 @@ const STANDARD_STATUS: Readonly<Record<string, number>> = {
   wrongRecipient: 422,
   cancelled: 422,
   taskFailed: 422,
+  // C-45: a SPEC §8.3 standard code (was 500). Never emitted by this consumer.
+  unsupportedExtension: 422,
 };
 
 /** S-50: HTTP status for a trust-task-error code per binding 0.2 §4 (normalizes 0.1 spellings; extended → 422; unknown standard → 500). */
@@ -62,13 +64,14 @@ export function mapOutcomeToHttp(
     case "rejected":
       return { status: statusForCode(outcome.error.payload.code), body: outcome.error };
     case "suppressed":
-      // Unreachable with UnauthenticatedTransport; answered like trust-tasks-https (no oracle).
+      // SPIKE: suppressed → 400 — unreachable with UnauthenticatedTransport; answered like trust-tasks-https, no oracle (L-11, C-45).
       return { status: 400, body: genericMalformed(), log: `suppressed rejection: ${outcome.reason.code}` };
     case "accepted":
       return { status: 204 };
     case "duplicate":
       if (outcome.priorResponse !== undefined) {
         const prior = outcome.priorResponse;
+        // SPIKE: retained error — a duplicate whose prior response was an error replays it at that code's status, not the binding's duplicate status (R6, L-10, C-45).
         return { status: isErrorDocument(prior) ? statusForCode(prior.payload.code) : 200, body: prior };
       }
       return { status: outcome.inFlight ? 202 : 204 };

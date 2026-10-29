@@ -1,11 +1,10 @@
 // app-trust-tasks/replay.ts — Postgres-backed ReplayGuard (S-22, S-24).
 //
 // No Deno globals: all I/O goes through the injected `fetch` / `restUrl` /
-// `svcHeaders` seam (DESIGN §3, P5–P10). The guard is app-scoped: a record
-// written by one app is never absorbed, released, or swept by another.
-//
-// SPIKE: app-scoped Postgres guard so a different app can never run this app's
-// effect a second time (S-24) — a row owned by another app is always `conflict`.
+// `svcHeaders` seam (DESIGN §3, P5–P10). The guard is app-scoped (S-24): a record
+// written by one app is never absorbed or released by another — a row owned by
+// another app is always `conflict`. Only the P8 sweep is global: it deletes every
+// app's *expired* rows, which no app can use any more (N-6).
 
 import {
   DEFAULT_SKEW_MS,
@@ -18,6 +17,13 @@ import type { PostgrestDeps } from "./core.ts";
 // (rt/freshness.ts:143 vs :182), so until_at is padded by DEFAULT_SKEW_MS (S-22, C-3).
 /** Default padding added to the runtime's retainUntil (S-22: recordExpiry omits skewMs). */
 export const DEFAULT_RETENTION_PAD_MS: number = DEFAULT_SKEW_MS;
+
+/**
+ * Default acceptance window over `issuedAt` for authenticate (S-42). Defined here
+ * (not in core.ts) so the guard's C-39 cap needs no value import from core.ts;
+ * core.ts re-exports it unchanged.
+ */
+export const DEFAULT_ACCEPTANCE_WINDOW_MS = 300_000;
 
 /** A row as P6 returns it — the four columns the claim reads back. */
 interface ReplayRecord {
@@ -33,6 +39,13 @@ export interface ReplayGuardDeps extends PostgrestDeps {
   appId: string;
   /** Added to retainUntil before it is stored as until_at. Default DEFAULT_RETENTION_PAD_MS. */
   retentionPadMs?: number;
+  /**
+   * C-39: the consumer's acceptance window; caps until_at at
+   * now + acceptanceWindowMs + 2·DEFAULT_SKEW_MS. Default DEFAULT_ACCEPTANCE_WINDOW_MS.
+   */
+  acceptanceWindowMs?: number;
+  /** C-40: structured log sink (`replay.release_failed`). Never given an id or digest. */
+  log?: (event: string, detail?: Record<string, unknown>) => void;
 }
 
 // What the conflict-resolution path (a 409 on the insert) decides: retry the
@@ -46,6 +59,8 @@ export class PostgresReplayGuard implements ReplayGuard {
   private readonly svcHeaders: () => Record<string, string>;
   private readonly appId: string;
   private readonly retentionPadMs: number;
+  private readonly acceptanceWindowMs: number;
+  private readonly log?: (event: string, detail?: Record<string, unknown>) => void;
 
   constructor(deps: ReplayGuardDeps) {
     this.fetch = deps.fetch;
@@ -53,6 +68,8 @@ export class PostgresReplayGuard implements ReplayGuard {
     this.svcHeaders = deps.svcHeaders;
     this.appId = deps.appId;
     this.retentionPadMs = deps.retentionPadMs ?? DEFAULT_RETENTION_PAD_MS;
+    this.acceptanceWindowMs = deps.acceptanceWindowMs ?? DEFAULT_ACCEPTANCE_WINDOW_MS;
+    this.log = deps.log;
   }
 
   // S-22: claim an id for execution. A missing retention window fails closed
@@ -68,7 +85,7 @@ export class PostgresReplayGuard implements ReplayGuard {
       throw new Error("replay claim: no retention window (retainUntil undefined)");
     }
     for (let attempt = 0; attempt < 2; attempt++) {
-      const res = await this.insert(id, digest, retainUntil);
+      const res = await this.insert(id, digest, retainUntil, now);
       if (res.status === 201) {
         this.sweep(now); // fire-and-forget; a failed sweep must not fail the claim
         return { kind: "fresh" };
@@ -83,33 +100,72 @@ export class PostgresReplayGuard implements ReplayGuard {
     throw new Error("replay insert: doc_id collision after one retry");
   }
 
-  // S-22: store the response document on this app's row (P9). Throws on non-2xx.
+  // S-22/C-40: store the response document on this app's row (P9). A rejected
+  // fetch or non-2xx is retried once; a second failure throws (the runtime
+  // swallows it, rt/consume.ts:553-564, and the record stays in flight — OVTC-43).
   async recordResponse(id: string, response: unknown): Promise<void> {
     const url = this.restUrl(
       `/app_tt_replay?doc_id=eq.${encodeURIComponent(id)}` +
         `&app_id=eq.${encodeURIComponent(this.appId)}`,
     );
-    const res = await this.fetch(url, {
+    const init: RequestInit = {
       method: "PATCH",
       headers: { ...this.svcHeaders(), Prefer: "return=minimal" },
       body: JSON.stringify({ response }),
-    });
-    if (!res.ok) throw new Error(`replay recordResponse failed with HTTP ${res.status}`);
+    };
+    let failure = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await this.fetch(url, init);
+        if (res.ok) return;
+        failure = `HTTP ${res.status}`;
+      } catch {
+        failure = "fetch rejected";
+      }
+    }
+    throw new Error(`replay recordResponse failed twice (${failure})`);
   }
 
   // S-22: release a claim that is not to stand. Scoped to this app's in-flight
   // record only — P10 filters `response=is.null`, so a completed record stays.
+  // C-40: total. P10 is issued once; a rejection or non-2xx is logged (status
+  // only — no id, no digest) and release resolves, so a refusal the handler
+  // already chose (e.g. 503 unavailable) is never turned into a 500. The record
+  // then stays in flight until its until_at (OVTC-42).
   async release(id: string, digest: string): Promise<void> {
     const url = this.restUrl(
       `/app_tt_replay?doc_id=eq.${encodeURIComponent(id)}` +
         `&app_id=eq.${encodeURIComponent(this.appId)}` +
         `&digest=eq.${encodeURIComponent(digest)}&response=is.null`,
     );
-    await this.fetch(url, { method: "DELETE", headers: this.svcHeaders() });
+    let status: number | null;
+    try {
+      const res = await this.fetch(url, { method: "DELETE", headers: this.svcHeaders() });
+      if (res.ok) return;
+      status = res.status;
+    } catch {
+      status = null;
+    }
+    try {
+      this.log?.("replay.release_failed", { status });
+    } catch {
+      // a throwing log sink must not make release throw
+    }
   }
 
-  // P5: insert the in-flight record. `until_at` is the retention deadline.
-  private async insert(id: string, digest: string, retainUntil: number): Promise<Response> {
+  // P5: insert the in-flight record. `until_at` is the retention deadline,
+  // capped at the acceptance window (C-39): freshness never accepts the document
+  // after now + window + 2·skew, so retaining it longer protects nothing.
+  private async insert(
+    id: string,
+    digest: string,
+    retainUntil: number,
+    now: number,
+  ): Promise<Response> {
+    const untilAt = Math.min(
+      retainUntil + this.retentionPadMs,
+      now + this.acceptanceWindowMs + 2 * DEFAULT_SKEW_MS,
+    );
     return this.fetch(this.restUrl("/app_tt_replay"), {
       method: "POST",
       headers: { ...this.svcHeaders(), Prefer: "return=minimal" },
@@ -118,7 +174,7 @@ export class PostgresReplayGuard implements ReplayGuard {
         app_id: this.appId,
         digest,
         response: null,
-        until_at: new Date(retainUntil + this.retentionPadMs).toISOString(),
+        until_at: new Date(untilAt).toISOString(),
       }),
     });
   }

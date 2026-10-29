@@ -25,7 +25,7 @@ import {
 } from "npm:@openvtc/trust-tasks@0.26.29";
 import { DataIntegrityProofVerifier, publicKeyFromDidKey } from "npm:@openvtc/trust-tasks-proof@0.1.3";
 import { PostgresChallengeStore } from "./challenges.ts";
-import { PostgresReplayGuard } from "./replay.ts";
+import { DEFAULT_ACCEPTANCE_WINDOW_MS, PostgresReplayGuard } from "./replay.ts";
 import { defaultMemberToken, mintMemberToken, upsertMemberByDid } from "./members.ts";
 import { mapOutcomeToHttp, plainError } from "./status.ts";
 
@@ -40,8 +40,8 @@ export const REGISTERED_TYPES: readonly string[] = [CHALLENGE_TYPE, AUTHENTICATE
 export const DEFAULT_CHALLENGE_TTL_MS = 120_000;
 /** Default member-session lifetime, equal to app-data's SESSION_TTL_MS (S-47). */
 export const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-/** Default acceptance window over `issuedAt` for authenticate (S-42). */
-export const DEFAULT_ACCEPTANCE_WINDOW_MS = 300_000;
+/** Default acceptance window over `issuedAt` for authenticate (S-42); defined in replay.ts (C-39). */
+export { DEFAULT_ACCEPTANCE_WINDOW_MS };
 /** Requests per app per minute before 429 (S-40; same as app-data). */
 export const RATE_LIMIT_PER_MIN = 120;
 /** Reverse-DNS `ext` namespace carrying the Community Cloud member object (S-47). */
@@ -77,7 +77,10 @@ export interface RateLimiter {
   hit(appId: string, nowMs: number): boolean;
 }
 
-// SPIKE: in-isolate rate limiter — per Supabase isolate, not global (same as app-data).
+/** N-3: distinct app ids the limiter keeps before it evicts closed windows. */
+const MAX_BUCKETS = 10_000;
+
+// SPIKE: in-isolate per-app rate limiter (120/min per isolate, not per source IP/DID; a transport 429, never auth/challenge:rateLimited; any APP_KEY holder can spend an app's budget) — C-46.
 /** Fixed-window in-isolate limiter, same semantics as app-data's isRateLimited (S-40). */
 export class InMemoryRateLimiter implements RateLimiter {
   private readonly limit: number;
@@ -88,6 +91,11 @@ export class InMemoryRateLimiter implements RateLimiter {
   }
   /** Record one request for `appId` at `nowMs`; true when this request exceeds the limit. */
   hit(appId: string, nowMs: number): boolean {
+    // N-3: the key is an unauthenticated appId, so bound the map — past MAX_BUCKETS distinct
+    // ids, drop every bucket whose window has closed (they would be reset on next hit anyway).
+    if (this.buckets.size >= MAX_BUCKETS && !this.buckets.has(appId)) {
+      for (const [k, b] of this.buckets) if (nowMs - b.windowStart > 60_000) this.buckets.delete(k);
+    }
     const bucket = this.buckets.get(appId);
     if (!bucket || nowMs - bucket.windowStart > 60_000) {
       this.buckets.set(appId, { count: 1, windowStart: nowMs });
@@ -184,7 +192,10 @@ async function handleInner(deps: CoreDeps, req: CoreRequest): Promise<CoreRespon
   }
   const app = await lookupApp(deps, appId);
   if (app === "unavailable") return plainError(503, "Service unavailable");
-  if (app === null || app.app_key !== appKey) return plainError(403, "Unknown app or wrong key");
+  // N-4: constant-time compare (the key is public; this is for consistency, not secrecy).
+  if (app === null || typeof app.app_key !== "string" || !constantTimeEqual(app.app_key, appKey)) {
+    return plainError(403, "Unknown app or wrong key");
+  }
   if (app.trust_signin_enabled !== true) return plainError(403, "Trust Task sign-in is not enabled for this app");
 
   // S-41: parse and dispatch.
@@ -239,11 +250,36 @@ async function lookupApp(deps: CoreDeps, appId: string): Promise<AppRow | null |
   return rows[0] as unknown as AppRow;
 }
 
+// C-42: eddsa-jcs-2022 only (Ed25519, matching the S-43/C-31 subject rule), and the
+// proof's verificationMethod must be the did:key's own `did#<multikey>` (SPEC §4.7.3
+// item 3; the upstream verifier ignores the fragment). PurposeCheckingVerifier unchanged.
 function proofPolicy(deps: CoreDeps) {
   return {
     kind: "verify" as const,
-    verify: new PurposeCheckingVerifier(new DataIntegrityProofVerifier({ now: () => deps.now().getTime() })),
+    verify: new PurposeCheckingVerifier(
+      new DidKeyMethodVerifier(
+        new DataIntegrityProofVerifier({ now: () => deps.now().getTime(), cryptosuites: ["eddsa-jcs-2022"] }),
+      ),
+    ),
   };
+}
+
+const DID_KEY_PREFIX = "did:key:";
+
+// C-42: refuse unless proof.verificationMethod === issuer + "#" + <the did:key's multikey>,
+// the only method a did:key document lists. Then delegate. Not exported (no §2 change).
+class DidKeyMethodVerifier implements ProofVerifier {
+  private readonly inner: ProofVerifier;
+  constructor(inner: ProofVerifier) {
+    this.inner = inner;
+  }
+  async verify<P>(doc: TrustTaskDocument<P>): Promise<boolean> {
+    const issuer = doc.issuer;
+    if (typeof issuer !== "string" || !issuer.startsWith(DID_KEY_PREFIX)) return false;
+    const method = (doc.proof as { verificationMethod?: unknown } | undefined)?.verificationMethod;
+    if (method !== `${issuer}#${issuer.slice(DID_KEY_PREFIX.length)}`) return false;
+    return (await this.inner.verify(doc)) === true;
+  }
 }
 
 function toHttp(deps: CoreDeps, outcome: Parameters<typeof mapOutcomeToHttp>[0]): CoreResponse {
@@ -280,6 +316,7 @@ async function runChallenge(deps: CoreDeps, appId: string, doc: Doc): Promise<Co
     payloadPolicy: { kind: "validate", validate: subsetSchemaValidator },
     checks: notConsequentialChecks(),
     doc,
+    // SPIKE: audience is per service, not per app — every app shares recipient = localVid, so app binding rests on app_tt_challenges.app_id and the app-scoped replay record; the runtime answers wrongRecipient where binding 0.2 §3 says identityMismatch (C-48).
     myVid: deps.localVid,
     now: deps.now().getTime(),
     newErrorId: uuidOf(deps),
@@ -310,16 +347,18 @@ function postgrest(deps: CoreDeps): PostgrestDeps {
 
 // S-44…S-48: auth/authenticate/0.3. Proof required (spec), replay-guarded, window-bounded.
 async function runAuthenticate(deps: CoreDeps, appId: string, doc: Doc): Promise<CoreResponse> {
-  const guard = new PostgresReplayGuard({ ...postgrest(deps), appId });
+  const windowMs = deps.acceptanceWindowMs ?? DEFAULT_ACCEPTANCE_WINDOW_MS;
+  // C-39/C-40: the guard caps until_at with the same window freshness uses, and logs a failed release.
+  const guard = new PostgresReplayGuard({ ...postgrest(deps), appId, acceptanceWindowMs: windowMs, log: deps.log });
   const store = new PostgresChallengeStore({ ...postgrest(deps), now: deps.now, randomUUID: deps.randomUUID, randomBytes: deps.randomBytes });
   const outcome = await consumeInbound<Record<string, unknown>, unknown>({
     transport: new UnauthenticatedTransport(),
     spec: AuthAuthenticate_v0_3.SPEC,
     proofPolicy: proofPolicy(deps),
     payloadPolicy: { kind: "validate", validate: subsetSchemaValidator },
-    checks: authenticateChecks(guard, deps.acceptanceWindowMs ?? DEFAULT_ACCEPTANCE_WINDOW_MS),
+    checks: authenticateChecks(guard, windowMs),
     doc,
-    myVid: deps.localVid,
+    myVid: deps.localVid, // audience: see the C-48 SPIKE marker in runChallenge
     now: deps.now().getTime(),
     newErrorId: uuidOf(deps),
     clock: nowIso(deps),
@@ -350,6 +389,7 @@ async function authenticateHandler(
   // mismatched guess (spec consumes at item 6, after comparing). Strictly safer on PostgREST.
   const found = await store.lookupAndConsume({ appId, sessionId: String(p.sessionId), now: deps.now() });
   if (found.kind === "notFound") return refuse(CODES.challengeNotFound, MSG.challengeNotFound);
+  // SPIKE: expiry before mismatch — the atomic PATCH reports expired without the stored challenge, so challengeExpired wins over challengeMismatch (spec compares first; both refuse and burn) — C-44.
   if (found.kind === "expired") return refuse(CODES.challengeExpired, MSG.challengeExpired, true);
   if (!constantTimeEqual(String(p.challenge), found.challenge)) return refuse(CODES.challengeMismatch, MSG.challengeMismatch);
 
@@ -367,6 +407,7 @@ async function authenticateHandler(
   const now = deps.now();
   const ttl = deps.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS;
   const expiresAt = new Date(now.getTime() + ttl);
+  // SPIKE: self-enrolment — any fresh did:key becomes a full member of a trust-enabled app, no admin/invite/ACL step and no expiry (VTI-CLT-010/012/013/014); gated only by the rate limit (C-47).
   const member = await upsertMemberByDid(postgrest(deps), appId, issuer);
   const token = await mintMemberToken(
     { ...postgrest(deps), memberTokenFactory: deps.memberTokenFactory ?? (() => defaultMemberToken(deps.randomUUID)) },
@@ -418,11 +459,16 @@ export function classifyType(type: string): TypeClass {
 
 /** S-41 framework-shape check (id/type/payload/party/timestamp/proof member types); null when acceptable, else a wire-safe message. */
 export function checkFrameworkShape(doc: Record<string, unknown>): string | null {
+  // SPIKE: envelope checks not done — type syntax beyond S-41's exact-match dispatch, and ceremony/extCritical placement (C-43).
   if (typeof doc.id !== "string" || doc.id.length === 0) return "id must be a non-empty string (SPEC §4)";
   if (typeof doc.type !== "string") return "type must be a string (SPEC §4)";
   if (!isPlainObject(doc.payload)) return "payload must be a JSON object (SPEC §4)";
-  for (const m of ["issuer", "recipient", "issuedAt", "expiresAt", "threadId"] as const) {
+  for (const m of ["issuer", "recipient", "issuedAt", "expiresAt", "threadId", "parentThreadId"] as const) {
     if (doc[m] !== undefined && typeof doc[m] !== "string") return `${m} must be a string when present (SPEC §4)`;
+  }
+  // C-43: RFC 3339 with a required offset, so the runtime's Date.parse never depends on the host's TZ.
+  for (const m of ["issuedAt", "expiresAt"] as const) {
+    if (doc[m] !== undefined && !isDateTime(doc[m] as string)) return `${m} is not an RFC 3339 date-time`;
   }
   if (doc.proof !== undefined && !isPlainObject(doc.proof)) return "proof must be a JSON object when present (SPEC §4.7)";
   return null;
@@ -538,8 +584,9 @@ export function assertSchemaSupported(schema: unknown): void {
   checkSchemaNode(schema);
 }
 
-// Recurse into every sub-schema slot so a nested keyword or a nested $ref is caught too
-// (the test feeds a bad keyword buried in $defs). A boolean additionalProperties is not a slot.
+// C-41: recurse into every sub-schema position at any depth. `items`, `propertyNames` and a
+// schema-valued `additionalProperties` are ONE sub-schema each; `properties` and `$defs` are
+// maps of name → sub-schema. A boolean sub-schema carries no keywords.
 function checkSchemaNode(node: unknown): void {
   if (!isPlainObject(node)) return; // annotation primitives / arrays carry no keywords
   const n = node as Record<string, unknown>;
@@ -549,11 +596,13 @@ function checkSchemaNode(node: unknown): void {
       throw new Error(`S-25: non-local $ref "${String(n.$ref)}"`);
     }
   }
-  for (const slot of ["properties", "items", "propertyNames", "$defs"] as const) {
-    const v = n[slot];
+  for (const slot of ["items", "propertyNames", "additionalProperties"] as const) {
+    if (Object.hasOwn(n, slot)) checkSchemaNode(n[slot]);
+  }
+  for (const map of ["properties", "$defs"] as const) {
+    const v = n[map];
     if (isPlainObject(v)) for (const sub of Object.values(v)) checkSchemaNode(sub);
   }
-  if (isPlainObject(n.additionalProperties)) checkSchemaNode(n.additionalProperties);
 }
 
 // SPIKE: a hand-written draft-2020-12 subset validator (the 20 keywords above, no json-schema
@@ -596,14 +645,14 @@ function checkSchema(schema: unknown, value: unknown, defs: Record<string, unkno
 
   if (isPlainObject(value)) {
     const keys = Object.keys(value);
-    if (s.required !== undefined && s.required.some((r) => !(r in value))) return false;
+    if (s.required !== undefined && s.required.some((r) => !Object.hasOwn(value, r))) return false;
     if (s.minProperties !== undefined && keys.length < s.minProperties) return false;
     if (s.propertyNames !== undefined) {
       for (const k of keys) if (!checkSchema(s.propertyNames, k, defs)) return false;
     }
     const props = s.properties;
     for (const k of keys) {
-      if (props && k in props) {
+      if (props && Object.hasOwn(props, k)) {
         if (!checkSchema(props[k], value[k], defs)) return false;
       } else if (s.additionalProperties === false) {
         return false;
