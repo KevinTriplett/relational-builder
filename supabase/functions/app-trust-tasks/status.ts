@@ -47,7 +47,8 @@ export function statusForCode(code: string): number {
   return 500;
 }
 
-function isErrorDocument(v: unknown): v is ErrorResponse {
+/** True for a `trust-task-error` document (C-60: the only kind of response the replay guard retains). */
+export function isErrorDocument(v: unknown): v is ErrorResponse {
   if (typeof v !== "object" || v === null) return false;
   const d = v as { type?: unknown; payload?: { code?: unknown } };
   return typeof d.type === "string" && d.type.split("#")[0].includes("/trust-task-error/") && typeof d.payload?.code === "string";

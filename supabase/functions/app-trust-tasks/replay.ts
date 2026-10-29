@@ -5,6 +5,13 @@
 // written by one app is never absorbed or released by another — a row owned by
 // another app is always `conflict`. Only the P8 sweep is global: it deletes every
 // app's *expired* rows, which no app can use any more (N-6).
+//
+// C-60 (R3-4, OVTC-53): a completed sign-in's response is not retained. P9 stores a
+// success as COMPLETED_RECORD ({completed: true}) and a trust-task-error unchanged, so
+// the access token never sits in app_tt_replay. On a duplicate, only a stored error
+// document is the priorResponse; any other completed row (including a full success
+// left by an earlier build) is {duplicate, inFlight: false} with no priorResponse,
+// which S-50 answers 204 with no body.
 
 import {
   DEFAULT_SKEW_MS,
@@ -12,11 +19,15 @@ import {
   type ReplayVerdict,
 } from "npm:@openvtc/trust-tasks@0.26.29";
 import type { PostgrestDeps } from "./core.ts";
+import { isErrorDocument } from "./status.ts";
 
 // SPIKE: retention pad — the runtime's recordExpiry stops skewMs before freshness does
 // (rt/freshness.ts:143 vs :182), so until_at is padded by DEFAULT_SKEW_MS (S-22, C-3).
 /** Default padding added to the runtime's retainUntil (S-22: recordExpiry omits skewMs). */
 export const DEFAULT_RETENTION_PAD_MS: number = DEFAULT_SKEW_MS;
+
+/** C-60: what P9 stores for a non-error response — never the success document or its token. */
+export const COMPLETED_RECORD = Object.freeze({ completed: true as const });
 
 /**
  * Default acceptance window over `issuedAt` for authenticate (S-42). Defined here
@@ -100,7 +111,8 @@ export class PostgresReplayGuard implements ReplayGuard {
     throw new Error("replay insert: doc_id collision after one retry");
   }
 
-  // S-22/C-40: store the response document on this app's row (P9). A rejected
+  // S-22/C-40/C-60: mark this app's row completed (P9) — an error document is stored
+  // unchanged, anything else as COMPLETED_RECORD. A rejected
   // fetch or non-2xx is retried once; a second failure throws (the runtime
   // swallows it, rt/consume.ts:553-564, and the record stays in flight — OVTC-43).
   async recordResponse(id: string, response: unknown): Promise<void> {
@@ -111,7 +123,7 @@ export class PostgresReplayGuard implements ReplayGuard {
     const init: RequestInit = {
       method: "PATCH",
       headers: { ...this.svcHeaders(), Prefer: "return=minimal" },
-      body: JSON.stringify({ response }),
+      body: JSON.stringify({ response: isErrorDocument(response) ? response : COMPLETED_RECORD }),
     };
     let failure = "";
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -200,7 +212,11 @@ export class PostgresReplayGuard implements ReplayGuard {
     }
     if (ours.digest !== digest) return { kind: "conflict" };
     if (ours.response === null) return { kind: "duplicate", inFlight: true };
-    return { kind: "duplicate", inFlight: false, priorResponse: ours.response };
+    // C-60: only a retained error is replayed; a completed success has no priorResponse.
+    if (isErrorDocument(ours.response)) {
+      return { kind: "duplicate", inFlight: false, priorResponse: ours.response };
+    }
+    return { kind: "duplicate", inFlight: false };
   }
 
   // P6: get the rows for this id (all apps; the caller scopes by app_id).

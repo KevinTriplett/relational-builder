@@ -620,3 +620,46 @@ index d4bb59e..59dafd3 100644
 ```
 
 The `app-data` diff is unchanged from the REVIEW-1 loop (S-52 / C-30 changes only); this loop did not touch that file.
+
+## REVIEW-3 loop
+
+Implementation agent, 2026-10-29. Starting point: commit a1365cd (17 failed, 281 passed, 6 todo). No TEST-DISPUTE entries were needed: every failing test matched its C-entry.
+
+### Per C-number
+
+- **C-60** (`replay.ts`, `status.ts`). `status.ts` now exports `isErrorDocument` (body unchanged; nothing else in the file changed). `replay.ts` exports `COMPLETED_RECORD = Object.freeze({ completed: true as const })` and imports `isErrorDocument` from `./status.ts`. `recordResponse` sends `{response: isErrorDocument(response) ? response : COMPLETED_RECORD}` in P9, so a success's `accessToken` and session id never reach `app_tt_replay`; the C-40 retry and the C-59 `replay.record_failed` log are unchanged. `resolveConflict`: `null` → `{duplicate, inFlight: true}`; an error document → `{duplicate, inFlight: false, priorResponse}`; anything else (`COMPLETED_RECORD`, or a full success left by a pre-C-60 build) → `{kind: "duplicate", inFlight: false}` with no `priorResponse` key, which S-50 already maps to 204 with no body. The file header cites C-60 / R3-4 / OVTC-53.
+- **C-61** (`core.ts`). New export `APP_ID_PATTERN` (canonical 8-4-4-4-12 hex uuid, `i` flag). In `handleInner`, after the 401 check, an `app_id` that fails the pattern → `plainError(403, "Unknown app or wrong key")` with no limiter hit and no PostgREST call. Then `const appId = req.appId.toLowerCase()`, used for the limiter, P1, and everything passed on to `runChallenge` / `runAuthenticate` (challenge store, replay guard, members, sessions). The C-57 comment in `hit` now notes that keys are 36-character uuids, so the entry bound is also a byte bound. `InMemoryRateLimiter` and every `// SPIKE:` line are unchanged (no marker line added, removed or edited).
+- **C-62.** Confirmation only; `trust-signin.ts` unchanged, and its S-61 test was already green.
+
+### DESIGN §2 signature changes
+
+None. `APP_ID_PATTERN`, `COMPLETED_RECORD` and the `isErrorDocument` export are additions; no existing signature changed. `trust-signin.ts`, `index.ts` and `app-data/index.ts` were not touched.
+
+### Finish-line outputs (REVIEW-3 loop, §4)
+
+```
+$ npx vitest run
+ Test Files  13 passed (13)
+      Tests  298 passed | 6 todo (304)
+   Duration  675ms (import 74%, tests 20%, transform 4%, setup 2%, worker 1%)
+
+$ npx tsc --noEmit -p tsconfig.functions.json
+exit 0
+$ npx tsc --noEmit -p tsconfig.app.json
+exit 0
+$ npx tsc --noEmit -p tests/tsconfig.json
+exit 0
+$ npx eslint supabase/functions/app-trust-tasks src/kit/files/lib/trust-signin.ts src/integrations/catalog.ts src/cloud/community-cloud.ts
+exit 0 (no output)
+$ deno check supabase/functions/app-trust-tasks/index.ts
+Check supabase/functions/app-trust-tasks/index.ts
+exit 0
+$ deno eval '…trust-tasks@0.26.29 …trust-tasks-proof@0.1.3…'
+ok
+exit 0
+$ grep -rn "Deno\." supabase/functions/app-trust-tasks/{core,challenges,replay,members,status}.ts
+(no output) exit 1
+$ git diff 6b68ea634f37a70e3a5ef3146d74a02072eda094 -- supabase/functions/app-data/index.ts
+(42 lines; identical to the diff recorded in the REVIEW-1 loop — the S-52 / C-30 edits only.
+ `git diff HEAD -- supabase/functions/app-data/index.ts` is empty: this loop did not touch it.)
+```

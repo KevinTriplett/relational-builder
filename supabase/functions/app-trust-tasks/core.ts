@@ -77,6 +77,9 @@ export interface RateLimiter {
   hit(appId: string, nowMs: number): boolean;
 }
 
+/** C-61: a canonical 8-4-4-4-12 hex uuid, either case. Any other app_id → 403 before the limiter. */
+export const APP_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** C-57: the most buckets (distinct app ids) the limiter ever holds. */
 const MAX_BUCKETS = 10_000;
 
@@ -92,7 +95,8 @@ export class InMemoryRateLimiter implements RateLimiter {
   /** Record one request for `appId` at `nowMs`; true when this request exceeds the limit. */
   hit(appId: string, nowMs: number): boolean {
     // C-57: the key is an unauthenticated appId, so the map is bounded at MAX_BUCKETS with no
-    // full scan. A closed window is deleted and re-inserted, so insertion order is window-start
+    // full scan. Since C-61 every key is a lowercased 36-character uuid, so the entry bound
+    // is also a byte bound. A closed window is deleted and re-inserted, so insertion order is window-start
     // order; a new id arriving at the cap evicts the first (oldest) bucket. O(1) amortized.
     const bucket = this.buckets.get(appId);
     if (!bucket || nowMs - bucket.windowStart > 60_000) {
@@ -189,8 +193,13 @@ export async function handleTrustTask(deps: CoreDeps, req: CoreRequest): Promise
 
 async function handleInner(deps: CoreDeps, req: CoreRequest): Promise<CoreResponse> {
   // S-40 (C-6): 401 → 429 → lookup (403/503) → disabled 403. All plain JSON.
-  const { appId, appKey } = req;
-  if (!appId || !appKey) return plainError(401, "app_id and app_key required");
+  const { appKey } = req;
+  if (!req.appId || !appKey) return plainError(401, "app_id and app_key required");
+  // C-61: a malformed app_id is refused as unknown before the limiter (no bucket, no
+  // PostgREST call); a well-formed one is lowercased for every later use (limiter, P1,
+  // stores, guard, members, sessions), so case variants share one bucket and one row owner.
+  if (!APP_ID_PATTERN.test(req.appId)) return plainError(403, "Unknown app or wrong key");
+  const appId = req.appId.toLowerCase();
   if (deps.rateLimiter.hit(appId, deps.now().getTime())) {
     return plainError(429, "Rate limit exceeded — try again in a minute");
   }
