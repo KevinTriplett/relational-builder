@@ -374,3 +374,31 @@ This extends OVTC-45 with facts a strict-parser fix must handle.
 - refuse hour 24;
 - either accept `:60` as `:59.999` or refuse it with an accurate message;
 - add these three cases to the conformance tests.
+
+## Phase 4 — final review (2026-10-28)
+
+From `REVIEW-3.md` §6.
+
+### OVTC-53 · `docs` / `bug` (spec) · `auth/authenticate/0.3` declares `exposure.discloses: none`, but its response carries a usable session token, and the duplicate rule replays it to any presenter
+
+**The declaration.** `specs/auth/authenticate/0.3/spec.md:42-46` declares:
+
+```yaml
+exposure:
+  discloses: none
+  ingests: metadata
+  actsAsSubject: true
+```
+
+The `#response` payload carries `tokens.accessToken` (examples at `:302`, `:334`). SPEC §7.3 item 14 (`SPEC.md:1076`) defines `discloses: secret` as "confidential material the caller retains, such as released credential material or a **usable session blob**", and `none` as "an acknowledgement or a determination only". An access token is the first, not the second. The rationale text discusses only `actsAsSubject` and the inbound identifiers.
+
+**Why it matters to a consumer.** SPEC §7.2 item 11 and binding 0.2 §5.1 item 4 (**SHOULD** "answer a duplicate with the result the first execution produced") together make a consumer that retains the `#response` return the *same* access token to anyone who re-presents a byte-identical request within the record's life. Over a transport with no authenticated party (`UnauthenticatedTransport`, which these two tasks are designed for), that makes the signed request a bearer credential for the replay window. Anyone who sees the request but not the response can use it: request-body logging, HAR files, error reporters.
+
+A consumer that decides what to retain by reading `exposure.discloses` (the purpose items 14 and 18 give the classes) is told there is nothing secret to protect. The task is still *consequential* via `actsAsSubject: true`, so freshness and replay rules apply. Only the confidentiality signal is wrong.
+
+**Evidence.** Our consumer follows the SHOULD. Its test "re-sending the identical signed document → 200 with the retained `#response` (same `accessToken`), no new session row" passes. The document is the only thing presented, and the private key is not needed for the resend.
+
+**Suggested fix.**
+1. Declare `discloses: secret` on `auth/authenticate/0.3` (and 0.2, and any task returning a `TokenBundle`), with a rationale naming `tokens`.
+2. Add one sentence to SPEC §7.2 item 11 or binding §5.1 item 4: where a task's `discloses` is `secret` and the transport authenticates no party, a consumer **SHOULD NOT** replay the retained response to a duplicate. Instead it SHOULD answer as "completed, no response retained" (binding `204`), or retain a redacted response. The producer's retry with a new document then obtains a new token through a new challenge.
+3. Consider the same note in `ReplayGuard`'s documentation, since `recordResponse` stores the full response by default.
